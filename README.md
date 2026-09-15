@@ -364,6 +364,7 @@ curl http://127.0.0.1:3080/dsh-whale/audio.json
 - 仓库里 `lib/index.js` 是宿主本体、`assets/whale-widget.js` 是前端本体；两者独立演进：**前端改动硬刷新页面即生效，宿主改动需重启 `dsh web`**。
 - 完整规格、视觉参数、路由清单、架构结论与生成提示词见 [`whale-widget-prompt.md`](whale-widget-prompt.md)。
 - 本地联调：`dsh plugin --profile web add link:.` 后，改前端 → Ctrl+F5；改宿主 → 重启 `dsh web`。
+- 「状态切换」的 6 个状态里，「输出完成后」的触发源与其余 5 个不同：它由 host 的 `turn/end`（`/dsh-whale/last-turn.json` seq 递增，与任务结束音效同源，走 `roleSwitchOnTurnEnd`）触发；其余状态由前端 DOM 采样（`roleSwitchSample`，200ms）判定。二者不要混为一谈。
 
 ## 许可证
 

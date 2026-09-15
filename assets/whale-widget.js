@@ -12230,7 +12230,6 @@ var roleSwitchEnabled = false
 var roleSwitchCfg = null // { v, enabled, minHold:{mode,global,perState}, states:{ key:{ images:[], revert:{on,sec} } } }
 var roleSwitchDraft = null // 编辑器草稿：打开时拷贝自 roleSwitchCfg，保存成功才写回，取消则丢弃
 var curSwitchState = 'idle'
-var roleSwitchWasWorking = false
 var roleSwitchRevertTimer = null
 var roleSwitchSampleTimer = null
 var roleSwitchHoldUntil = 0 // 最短持续时间：进入某工作状态后至少停留到的时刻（ms）
@@ -12295,6 +12294,8 @@ function applyRoleSwitchImage(key) {
   img.src = roleSwitchImageFor(key)
 }
 function roleSwitchEnterState(key) {
+  // 非工作状态（idle/done/toolError）进入即解除「最短停留」门控，避免陈旧 holdUntil 影响下一轮
+  if (!ROLE_SWITCH_GATED[key]) roleSwitchHoldUntil = 0
   curSwitchState = key
   applyRoleSwitchImage(key)
   roleSwitchClearRevert()
@@ -12356,13 +12357,15 @@ function roleSwitchRequestState(target) {
   roleSwitchHoldUntil = hold > 0 ? now + Math.round(hold * 1000) : 0
 }
 // 状态采样：以当前焦点会话的 DOM 为准。
-// 优先级：深度思考 > 调用工具失败(运行→失败边沿) > 调用工具 > 输出 > 运行中兜底 > 输出完成后/默认。
+// 优先级：深度思考 > 调用工具失败(运行→失败边沿) > 调用工具 > 输出 > 默认。
+// 「输出完成后」由 host 的 turn/end（last-turn.json seq 递增，与任务结束音效同源）触发，不由 DOM 采样判定。
 function roleSwitchSample() {
   try {
     if (!roleSwitchEnabled) return
     var flow = roleSwitchFlowEl
     if (!flow || !flow.isConnected) {
       flow = document.querySelector('[data-chat-flow]')
+      if (flow !== roleSwitchFlowEl) roleSwitchPrevToolState = null // 切换会话：重置「运行→失败」边沿记忆
       roleSwitchFlowEl = flow
     }
     var thinking = !!flow && !!flow.querySelector('[data-variant="think"][data-state="running"]')
@@ -12386,9 +12389,16 @@ function roleSwitchSample() {
     else if (streaming) target = 'output'
     else if (anyWorking) target = null // 运行中但无具体信号（工具结果处理间隙等）：保持当前状态，防闪烁
     else if (curSwitchState === 'done' || curSwitchState === 'toolError') target = null // 边沿态保持，等 revert 或下一轮
-    else target = roleSwitchWasWorking ? 'done' : 'idle'
-    roleSwitchWasWorking = anyWorking
+    else target = 'idle'
     if (target !== null && target !== curSwitchState) roleSwitchRequestState(target)
+  } catch (err) {}
+}
+// 「输出完成后」触发：与任务结束音效同源（host turn/end → last-turn.json seq 递增）。
+// 由 pollLastTurn 在检测到新 seq 时调用，避免 DOM 采样在切换会话时误触发。
+function roleSwitchOnTurnEnd() {
+  try {
+    if (!roleSwitchEnabled) return
+    roleSwitchEnterState('done')
   } catch (err) {}
 }
 function roleSwitchStartSampler() {
@@ -14682,6 +14692,7 @@ function pollLastTurn() {
             lastCostSeq = d.seq
             try { localStorage.setItem('dshw-last-seq', String(lastCostSeq)) } catch (err) {}
             playTaskEndSound()
+            roleSwitchOnTurnEnd()
             if (d.turn !== null && d.amount !== null) {
               showCostBubble(Number(d.amount))
             }
@@ -14696,6 +14707,7 @@ function pollLastTurn() {
           lastCostSeq = d.seq
           try { localStorage.setItem('dshw-last-seq', String(lastCostSeq)) } catch (err) {}
           playTaskEndSound()
+          roleSwitchOnTurnEnd()
           if (d.turn !== null && d.amount !== null) {
             showCostBubble(Number(d.amount))
           }
