@@ -12225,7 +12225,7 @@ function renderRolePanel() {
 // —— 状态切换：状态机 + 形象切换 ——
 var ROLE_SWITCH_URL = '/dsh-whale/role-switch.json'
 var ROLE_SWITCH_STATES = ['idle', 'thinking', 'output', 'tool', 'toolError', 'done']
-var ROLE_SWITCH_LABELS = { idle: '默认（Idle）', thinking: '深度思考', output: '输出', tool: '调用工具', toolError: '调用工具失败', done: '输出完成后' }
+var ROLE_SWITCH_LABELS = { idle: '默认', thinking: '深度思考', output: '输出', tool: '调用工具', toolError: '调用工具失败', done: '输出完成后' }
 var roleSwitchEnabled = false
 var roleSwitchCfg = null // { v, enabled, minHold:{mode,global,perState}, states:{ key:{ images:[], revert:{on,sec} } } }
 var roleSwitchDraft = null // 编辑器草稿：打开时拷贝自 roleSwitchCfg，保存成功才写回，取消则丢弃
