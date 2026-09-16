@@ -10,7 +10,7 @@ DeepSeek Harness（DSH）Web 界面右下角的常驻挂件：小鲸鱼气泡图
 
 - 🐋 **常驻自启**：随 DSH Web 界面每次打开自动出现（标准 DSH bundle 插件）
 - 💰 **余额**：60 秒自动刷新 + 点击鲸鱼手动刷新；余额变化时数字**滚动动画**；瞬时网络抖动自动沿用最近余额不报错
-- 📊 **今日已用（小鲸鱼记账）**：不需要任何令牌。每次观测余额后按**余额差值**记账（跨天自动归零归档；逐轮明细保留 90 天或最多 2 万条、逐日归档保留 365 天，超期数据归档到 `.dshw-usage-archive.json`）；余额差不可用（充值/退款/无基准）时用会话事件的金额合计兜底
+- 📊 **今日已用（小鲸鱼记账）**：不需要任何令牌。余额**下降**按观测累计为消费，余额**上升**（充值 / 赠金）单独记录、不会冲掉已有消费；检测到余额增加会提示「待核对余额调整」，可在「小鲸鱼记账 → **DeepSeek（内置）→ 设置 → 余额校正**」按实际累计到账金额与非调用扣减校正 —— **「已观测消费」与「余额校正」都是 DeepSeek 账户口径**（由该 API key 的余额观测得出，不含其它厂商；「本机模型费用」才是所有模型的本地估算）（逐轮明细保留 90 天或最多 2 万条、逐日归档保留 365 天，超期数据归档到 `.dshw-usage-archive.json`）；金额按 8 位小数记账、显示保留两位
 - 💬 **每轮对话消耗**：监听 DSH 本机会话事件，按模型**真实 usage**（input / cache / output / reasoning tokens）换算金额，每轮结束弹出消耗泡泡；可开关、自动关闭秒数可设（0 = 不自动关闭），**泡泡内容可自定义**（模块化，金额用 `{cost}` 引用），入口：菜单 → 每轮消耗提示 → 「自定义提示」
 - ⛰️ **峰谷定价**：工作日高峰 9:00–12:00、14:00–18:00（北京时间），其余空闲；2026-08-23 起**周末全天谷价**。峰谷模块支持状态文字、倒计时、"梁文峰谷 / !?强强?! / 简洁"等多种样式
 - 📒 **用量记录窗口**：今日模型消费、近 7 天、全部记录；模型占比条；按日期展开逐条明细（含时间与金额）；支持按日期或**模型名搜索**；模型名带友好标注（`deepseek-flash` → `DeepSeek-V4.1-Flash`，旧名标注"同 V4.1 Flash"）
@@ -58,18 +58,19 @@ DeepSeek Harness（DSH）Web 界面右下角的常驻挂件：小鲸鱼气泡图
 
 除内置的 DeepSeek 余额外，可在「小鲸鱼记账 → 模型」里添加任意厂商；每个模型独立配置余额预警 / 今日预算 / 额度：
 
-- 🧩 **厂商模板（33 个，选完自动带好凭据名 / 币种 / 接口 / 字段路径 / 事件匹配 / 探活地址）**：
-  - **可直接查到余额或额度**：DeepSeek（内置）、OpenRouter、Kimi / Moonshot（CN / 国际）、阶跃星辰 StepFun、Novita、智谱 GLM Coding Plan（国内 / 国际 z.ai）、Kimi Coding、MiniMax Coding（国内 / 国际）、OpenAI 兼容中转站（OneAPI / New API）
+- 🧩 **厂商模板（34 个，选完自动带好凭据名 / 币种 / 接口 / 字段路径 / 事件匹配 / 探活地址）**：
+  - **可直接查到余额或额度**：DeepSeek（内置）、OpenRouter、Kimi / Moonshot（CN / 国际）、阶跃星辰 StepFun、Novita、智谱 GLM Coding Plan（国内 / 国际 z.ai）、Kimi Coding、MiniMax Coding（国内 / 国际）、**OpenCode Go（订阅，5h / 周 / 月三窗口）**、OpenAI 兼容中转站（OneAPI / New API）
   - **官方没有「用 API key 查余额」的接口**（下拉里标注「（无余额接口）」，选完会用 `probeUrl` 探活验证 key，余额显示「—」，今日已用按会话事件估算）：硅基流动（CN / EN）、火山方舟 Ark、OpenAI、Anthropic Claude、Google Gemini、xAI Grok、Groq、Mistral AI、Together AI、Fireworks AI、DeepInfra、Cerebras、阿里云百炼（通义千问）、百度千帆（文心）、腾讯混元、讯飞星火、魔搭 ModelScope、本地模型（Ollama / LM Studio）
   - **全手填**：自定义 HTTP（URL 与字段路径自己写）、Codex（本地会话，无需接口）
 - 🔑 **密钥不落配置**：密钥写入 DSH 官方凭据服务，配置文件里只存**凭据名**（如 `OPENROUTER_API_KEY`）；删除模型会连带清理该模型的额度模块与设置
 - 💰 **余额**：按模板的接口与 JSON 字段路径读取（支持 `a.b[0].c` 与 `scale` 乘数）；点「测试连通性」可先验证 key
-- 📉 **今日已用**：优先**余额差记账**（当天首次观测为基准，之后累加下降额），无余额接口的厂商退化为**会话事件**估算
+- 📉 **今日已用**：有余额接口时记录观测到的**下降额**（当天首次观测为统计起点，充值等增加额不会冲掉消费），无余额接口的厂商显示本机会话**估算**
 - 🎯 **额度（订阅 / 资源包）**：填总量即可，已用**按 DSH 会话 token 自动累计**（口径 `input + cacheRead + output`，推理 token 已含在 output 内，跨天保留），也可切换手动填写；支持「不重置 / 每日 / 每月」
+- 🧾 **订阅额度接口（`kind:'quota'` 模板）**：直接读厂商官方接口的「窗口已用% + 重置时间」，与上面按会话统计的额度互补。**支持一个接口返回多个窗口**（目前 OpenCode Go 为 5h / 周 / 月三窗口），逐窗口展示已用百分比与各自的紧凑重置倒计时；模板用 `quota.json.windows` 描述各窗口的字段路径
 - 💱 **单价（可选）**：位置在「密钥 / 接口」面板 → 展开「接口与字段（高级）」→「单价（可选）」。每个模型可自填单价 —— **缓存命中 / 未命中输入 / 输出**，单位是「币种 / 百万 token」；币种支持人民币（CNY）与美元（USD），**选美元时必须填汇率（元/USD）**；记账与账本**统一按人民币结算**（美元单价会按汇率折算）；单价**不分峰谷**（两个时段同价）。留空则沿用内置价目表（DeepSeek flash / pro）。注意：**内置 DeepSeek 不支持自定义单价**（始终用内置峰谷价）；额度单位选「金额（元）」时，已用**只能手动填写**
 - 🫧 **泡泡模块**：每个模型自动获得「余额·<模型名>」与「额度·<模型名>」两个模块，占位符 `{balance}`、`{today}`、`{quota}`、`{quota_used}`、`{quota_left}`、`{quota_total}`、`{quota_reset}`
 
-> 说明：并非所有厂商都提供「用 API key 查余额」的接口。**硅基流动**的余额接口已被官方下线（[2026-08-11 更新公告](https://api-docs.siliconflow.cn/docs/release-notes/overview)：`/user/info` 自 **2026-08-14** 起停止服务，「后续将适时提供替代 API」，截至发版仍未见替代接口），**火山方舟**的余额 / 用量与**阿里云百炼 / 百度千帆 / 腾讯混元**一样属于各家云平台 AK/SK 签名的 OpenAPI，**OpenAI / Anthropic / Gemini / xAI / Groq / Mistral / Together / Fireworks / DeepInfra / Cerebras** 则根本没有公开的余额查询接口 —— 这些模板统一是「无余额接口 + 探活验证 key」，今日已用按会话事件估算。厂商的**订阅额度**接口（智谱 / Kimi Coding / MiniMax Coding）只对订阅套餐账号有效：Token 资源包账号调用智谱接口会返回「当前用户不存在coding plan」，这种情况请用上面的「额度（订阅 / 资源包）」自动统计。
+> 说明：并非所有厂商都提供「用 API key 查余额」的接口。**硅基流动**的余额接口已被官方下线（[2026-08-11 更新公告](https://api-docs.siliconflow.cn/docs/release-notes/overview)：`/user/info` 自 **2026-08-14** 起停止服务，「后续将适时提供替代 API」，截至发版仍未见替代接口），**火山方舟**的余额 / 用量与**阿里云百炼 / 百度千帆 / 腾讯混元**一样属于各家云平台 AK/SK 签名的 OpenAPI，**OpenAI / Anthropic / Gemini / xAI / Groq / Mistral / Together / Fireworks / DeepInfra / Cerebras** 则根本没有公开的余额查询接口 —— 这些模板统一是「无余额接口 + 探活验证 key」，今日已用按会话事件估算。厂商的**订阅额度**接口（智谱 / Kimi Coding / MiniMax Coding / OpenCode Go）只对订阅套餐账号有效：Token 资源包账号调用智谱接口会返回「当前用户不存在coding plan」，这种情况请用上面的「额度（订阅 / 资源包）」自动统计。
 >
 > 模板只提供**默认值**：选完模板后可以随意改写接口地址与字段路径；留空的字段会**继续沿用模板默认值**（不会因为留空而失效）。
 
@@ -93,7 +94,8 @@ dsh-whale-widget/
 ├── README.md                 # 本文件
 ├── cordis.patch.yml          # 插件挂载声明
 ├── lib/
-│   └── index.js              # 宿主侧插件本体（路由 + 记账 + 音效/图片/角色服务）
+│   ├── index.js              # 宿主侧插件本体（路由 + 记账 + 音效/图片/角色服务）
+│   └── accounting.mjs        # 记账内核（定点金额运算 + 余额观测/校正账本）
 ├── assets/
 │   ├── whale-widget.js       # 前端挂件本体（由宿主按 mtime 热读取）
 │   ├── DSH2.png              # README 顶部展示图
@@ -114,7 +116,8 @@ dsh-whale-widget/
 | 文件 / 目录 | 用途 |
 |---|---|
 | `.dshw-size.json` | 挂件外观与开关（缩放、音量、音效组、峰值样式、吸附相关等） |
-| `.dshw-usage.json` | 记账账本 + 用量设置（任务结束音、余额预警、今日预算、每轮消耗提示内容） |
+| `.dshw-usage.json` | 记账账本 + 按日余额观测/校正摘要 + 用量设置（任务结束音、余额预警、今日预算、每轮消耗提示内容） |
+| `.dshw-usage.json.before-recharge-fix.bak` | 旧格式账本备份（0.3.1 首次写入旧账本前自动创建；已存在则不覆盖） |
 | `.dshw-turn.json` | 每轮消耗的 seq（避免热重载后前端把新轮次当旧轮次） |
 | `.dshw-bubble.json` | 自定义泡泡配置（点击序列 + 模块库 + 点按角色推进队列开关） |
 | `.dshw-role-switch.json` | 状态切换配置（6个状态各自的形象、「N 秒后回到默认」与「最短持续时间」设置） |
@@ -269,6 +272,7 @@ MeteorNOX/DeepSeek-Balance-Whale-Widget，或者我本地已经有这个插件�
 | `SILICONFLOW_API_KEY` | 硅基流动 `/v1/models` 探活 |
 | `ARK_API_KEY` | 火山方舟 `/api/v3/models` 探活 |
 | `ZHIPU_API_KEY` | 智谱（订阅额度接口 / Coding 端点） |
+| `OPENCODE_GO_API_KEY` | OpenCode Go 订阅额度（`opencode.ai/zen/go/v1/usage`，鉴权为 `Authorization: Bearer <key>`） |
 | `CUSTOM_API_KEY` | 自定义 HTTP / OpenAI 兼容中转站 |
 
 > ⚠️ 自定义模型面板里的「凭据名」决定密钥写进哪个 ref。换厂商时请确认这一栏跟着模板变了，否则新密钥会写进上一家厂商的凭据名里（覆盖掉原来的 key）。v679 起新增模型会自动跟随模板。
@@ -338,8 +342,9 @@ curl http://127.0.0.1:3080/dsh-whale/audio.json
 - **挂件不出现**：确认安装命令成功；`dsh --profile web --dump-config` 里能看到 `dsh-whale-widget`；重启 `dsh web` 后 F5。
 - **图片/音效不显示、没声音**：确认插件包内 `assets/` 完整（`DSniang1.png`、`*.mp3`、`minecraft-exp-orb.wav` 等）；缺失时相关功能静默降级。
 - **余额报「未配置 DEEPSEEK_API_KEY」**：去 DSH 凭据里配置。
-- **今日已用显示 `--`**：需要先完成一次余额观测（60 秒内自动进行）；若当天既没有余额差也没有会话事件，会显示 0。
-- **今日已用与官网有差异**：主口径是"当天余额差"，与官网扣款基本一致；会话事件合计只在余额差不可用时兜底。
+- **今日已用显示 `--`**：先等一次成功的余额观测；统计从该观测时刻开始，起点之前的消费不在此区间内。
+- **今日已用与官网有差异**：先核对同一账户、同一币种与同一统计区间；若有充值或其它余额调整，用「小鲸鱼记账 → DeepSeek（内置）→ 设置 → 余额校正」填写实际到账金额。余额接口只返回余额快照、不提供充值流水，充值与消费发生在同一次刷新间隔时需要实际到账金额才能校正。
+- **充值后消费数字没变**：这是预期行为——充值不会增加消费；数字上方会出现「待核对余额调整」，提示你补充本统计区间的累计到账金额。
 - **每轮消耗不显示**：确认菜单里「每轮对话后自动显示消耗金额」已勾选；一轮对话要完整结束（`turn/end`）才结算。余额变化泡泡与消耗泡泡抢层时，提醒会退化为居中卡片。
 - **每轮消耗泡泡的内容**：菜单 → 每轮消耗提示 → 「自定义提示」里编辑（模块化，金额用 `{cost}`）；这里同时能设自动关闭秒数与任务结束音效。
 - **任务结束音没响**：该开关默认**关闭**（默认已选中内置的 Minecraft·经验球；另有内置预设 **A** 可选）；到菜单 → 每轮消耗提示 → 「自定义提示」里打开即可。若自定义片段文件被删，会回退/静音。
@@ -361,11 +366,24 @@ curl http://127.0.0.1:3080/dsh-whale/audio.json
 
 ## 开发与维护
 
-- 仓库里 `lib/index.js` 是宿主本体、`assets/whale-widget.js` 是前端本体；两者独立演进：**前端改动硬刷新页面即生效，宿主改动需重启 `dsh web`**。
+- 仓库里 `lib/index.js` 是宿主本体、`lib/accounting.mjs` 是记账内核（定点金额运算 + 观测/校正账本）、`assets/whale-widget.js` 是前端本体；宿主改动（含记账内核）需重启 `dsh web`，仅前端改动硬刷新页面即生效。
 - 完整规格、视觉参数、路由清单、架构结论与生成提示词见 [`whale-widget-prompt.md`](whale-widget-prompt.md)。
 - 本地联调：`dsh plugin --profile web add link:.` 后，改前端 → Ctrl+F5；改宿主 → 重启 `dsh web`。
 - 「状态切换」的 6 个状态里，「输出完成后」的触发源与其余 5 个不同：它由 host 的 `turn/end`（`/dsh-whale/last-turn.json` seq 递增，与任务结束音效同源，走 `roleSwitchOnTurnEnd`）触发；其余状态由前端 DOM 采样（`roleSwitchSample`，200ms）判定。二者不要混为一谈。
 
+## 致谢
+
+- 充值记账修复方案（余额上升与下降分开记账、显式余额校正公式、按账户/币种隔离观测窗口、账本原子写入与迁移备份）由 GitHub 用户 [@Yang-huai406](https://github.com/Yang-huai406) 独立设计并实现为可运行的修复分支；**0.3.1 在该方案基础上移植合并**，并保留本项目既有的音效修复。感谢他的支持。
+- OpenCode Go 订阅额度（多窗口额度 `quota.json.windows`、按窗口展示与紧凑重置倒计时、「订阅额度」模块的窗口选择）由 GitHub 用户 [@ELFsay](https://github.com/ELFsay) 提交（[#99](https://github.com/MeteorNOX/DeepSeek-Balance-Whale-Widget/pull/99)），已合入 `main`。感谢他的贡献。
+- **历史合并 PR 的贡献者**（按合入顺序，均已进入本仓库代码 / 发布流程）：
+  - [@ztzpro](https://github.com/ztzpro)（[#1](https://github.com/MeteorNOX/DeepSeek-Balance-Whale-Widget/pull/1)）：把余额小鲸鱼挂件**改造成标准 DSH 插件包**（今天的 `cordis.patch.yml` + bundle 结构就来自这里）；
+  - [@under-the-ocean](https://github.com/under-the-ocean)（[#6](https://github.com/MeteorNOX/DeepSeek-Balance-Whale-Widget/pull/6) / [#7](https://github.com/MeteorNOX/DeepSeek-Balance-Whale-Widget/pull/7)）：push 触发**自动发布 npm**、升级 npm 以支持 Trusted Publishing（OIDC）—— 现在的发版流程仍是这套；
+  - [@21253soursweetlemon](https://github.com/21253soursweetlemon)（[#16](https://github.com/MeteorNOX/DeepSeek-Balance-Whale-Widget/pull/16) / [#18](https://github.com/MeteorNOX/DeepSeek-Balance-Whale-Widget/pull/18)）：gif 加载失败降级为文字台词、右缘滚动条避让、**锚点位置记忆**（窗口变化不悬空、能吸回原位 —— 位置系统的起点）；
+  - [@fangbm](https://github.com/fangbm)（[#15](https://github.com/MeteorNOX/DeepSeek-Balance-Whale-Widget/pull/15) / [#19](https://github.com/MeteorNOX/DeepSeek-Balance-Whale-Widget/pull/19) / [#31](https://github.com/MeteorNOX/DeepSeek-Balance-Whale-Widget/pull/31) / [#33](https://github.com/MeteorNOX/DeepSeek-Balance-Whale-Widget/pull/33) / [#46](https://github.com/MeteorNOX/DeepSeek-Balance-Whale-Widget/pull/46)）：多币种余额顺序稳定、每轮消耗泡泡两处缺陷、**周末全天谷价**、记账币种感知、发布时自动建 Release 并生成 PR changelog；
+  - [@xiaolinnnnnnn](https://github.com/xiaolinnnnnnn)（[#26](https://github.com/MeteorNOX/DeepSeek-Balance-Whale-Widget/pull/26)）：Windows 桌面端（Tauri v2）重构。
+
 ## 许可证
 
-本项目基于 **MIT License** 开源，详见 [LICENSE](LICENSE)。
+本项目**代码**基于 **MIT License** 开源，详见 [LICENSE](LICENSE)。
+
+⚠️ **`assets/` 下的美术素材（图片 / 动图 / 音效）不在 MIT 覆盖范围内**：它们由维护者提供或使用 AI 工具生成，按「原样（as-is）」随插件分发、仅供运行本插件使用，不授予再许可、也不声明为原创作品。逐项来源、元数据清理说明与权利主张（takedown）方式见 **[PROVENANCE.md](PROVENANCE.md)**。

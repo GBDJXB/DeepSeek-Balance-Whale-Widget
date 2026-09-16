@@ -293,7 +293,7 @@ var css = [
   '.dshwv-usagepanel{position:fixed;z-index:26020;background:#fff;border:1px solid rgba(32,49,112,.35);border-radius:10px;box-shadow:0 8px 22px rgba(15,23,42,.22);padding:10px 12px;color-scheme:light;max-height:70vh;overflow-y:auto}',
   // 用量作为主菜单内的子界面
   '.dshwv-menuview{display:block}',
-  '.dshwv-usage-sub{display:none;max-height:min(70vh,560px);overflow-y:auto;padding-right:2px;width:100%;box-sizing:border-box}',
+  '.dshwv-usage-sub{display:none;max-height:min(70vh,560px);overflow-y:auto;padding-right:2px;padding-bottom:12px;width:100%;box-sizing:border-box}',
   '.dshwv-usage-back{border:none;background:none;color:#203170;font-size:12px;font-weight:600;cursor:pointer;padding:0 0 2px;text-align:left;width:100%}',
   '.dshwv-usage-back:hover{color:#2f4488;text-decoration:underline}',
   '.dshwv-usagebody{display:flex;flex-direction:column;gap:2px;color:#203170;font-size:12px;min-width:0;overflow-x:hidden}',
@@ -1494,7 +1494,7 @@ function hideUsageSub() {
   }, 230)
 }
 function closeUsagePanel() { hideUsageSub() }
-function usageMoney(x) { return '¥' + (isFinite(Number(x)) ? Number(x).toFixed(2) : '0.00') }
+function usageMoney(x, currency) { return apiFmtMoney(x, currency || 'CNY') }
 function usageDayLabel(day) {
   try {
     var d = day.split('-')
@@ -1889,6 +1889,13 @@ function apiModelById(id) {
   for (var i = 0; i < apiModels.length; i++) if (apiModels[i] && apiModels[i].id === id) return apiModels[i]
   return null
 }
+// 「充值 / 余额校正」只属于固定的 DeepSeek（内置）：宿主在模型条目里下发 canAdjustBalance，
+// 前端据此决定要不要在设置菜单里给出入口 —— 手动新增的同名模型、Kimi 等其它厂商都不会有，
+// 新增模板也不会自动继承（宿主还会在路由层再校验一次，见 balance-adjustments.json）。
+function apiCanAdjustBalance(model) {
+  return !!(model && model.id === 'deepseek' && model.builtin === true &&
+    model.provider === 'deepseek' && model.canAdjustBalance === true)
+}
 // 今日已用金额自带的币种（host 下发的 todayUsageCurrency）：
 // 会话事件金额在 host 已按自定义单价折算成人民币，余额差则是厂商币种 → 显示必须按各自的币种，
 // 否则 USD 单价的模型会把人民币数值渲染成 $。
@@ -1920,7 +1927,11 @@ function apiFmtMoney(v, cur) {
 function apiUsageSourceLabel(src) {
   var s = String(src || '')
   if (s === 'ledger' || s === 'balance') return '余额差记账'
-  if (s === 'events') return '会话事件'
+  if (s === 'events') return '本地估算'
+  if (s === 'balance-observed') return '已观测消费'
+  if (s === 'balance-needs-review') return '待核对余额调整'
+  if (s === 'balance-corrected') return '已校正消费'
+  if (s === 'legacy') return '旧版记录 · 未校正'
   return ''
 }
 // 模型列表加载：并发合并 + 失败退避重试 + 失败态可重试。
@@ -2815,7 +2826,7 @@ function openApiModelMenu(modelId) {
     else st.textContent = '余额 ' + apiFmtMoney(m.balance, m.currency) + ' · 今日已用 ' + apiFmtMoney(m.todayUsage, apiTodayCur(m))
     card.appendChild(st)
     var ms = (usageSet && usageSet.models && usageSet.models[modelId]) || {}
-    function rowOf(label, stateFn, onEdit) {
+    function rowOf(label, stateFn, onEdit, buttonLabel) {
       var r = document.createElement('div')
       r.className = 'dshwv-audiorow'
       var l = document.createElement('span')
@@ -2832,8 +2843,9 @@ function openApiModelMenu(modelId) {
       info.style.textOverflow = 'ellipsis'
       info.textContent = stateFn()
       r.appendChild(info)
-      r.appendChild(apiBtn('编辑', 'dshwv-roleimport', onEdit))
+      r.appendChild(apiBtn(buttonLabel || '编辑', 'dshwv-roleimport', onEdit))
       card.appendChild(r)
+      return r
     }
     rowOf('余额预警', function () {
       var a = ms.alert
@@ -2890,13 +2902,15 @@ function openApiModelMenu(modelId) {
       card.appendChild(pr)
     }
     // 只读行（复用现有 .dshwv-audiorow / .dshwv-usage-hint，不引入新颜色与字体）
-    function readonlyRow(label, text) {
+    function readonlyRow(label, text, hintHtml) {
       var r = document.createElement('div')
       r.className = 'dshwv-audiorow'
       var l = document.createElement('span')
       l.textContent = label
       l.style.flex = '0 0 auto'
       r.appendChild(l)
+      // 需要「?」说明时，说明收进圆圈（悬停显示、点击钉住），与挂件其它说明圈同一套组件
+      if (hintHtml) { try { r.appendChild(dshwvAskDot(hintHtml)) } catch (err) {} }
       var v = document.createElement('span')
       v.className = 'dshwv-usage-hint'
       v.style.flex = '1'
@@ -2929,6 +2943,32 @@ function openApiModelMenu(modelId) {
       pTxt = '未设置（沿用内置价目表）→ 在「密钥 / 接口」里填写'
     }
     readonlyRow('单价', pTxt)
+    // 「已观测消费」= DeepSeek 账户口径（余额观测），只在内置项的设置里显示，与下面的「余额校正」配套。
+    if (apiCanAdjustBalance(m)) {
+      var acc = m.accounting || null
+      var accAmt = (acc && typeof acc.amount === 'number') ? acc.amount : m.todayUsage
+      var accInfo = (acc && acc.firstObservedAt)
+        ? '统计起点（北京）：' + accountingTime(acc.firstObservedAt) + '。起点前的消费未计入；该账户的观测包含同一个 key 在别处的消费。'
+        : '尚无余额观测：先配置 DeepSeek API key 并成功刷新一次余额。'
+      readonlyRow('已观测消费', ((acc && acc.label) || m.usageLabel || '已观测消费') + ' ' +
+        (isFinite(Number(accAmt)) ? apiFmtMoney(accAmt, apiTodayCur(m)) : '--'), accInfo)
+      // 需要用户动手的提示仍然直接显示（不藏进「?」里）
+      if (acc && acc.needsReview) {
+        var accWarn = document.createElement('div')
+        accWarn.className = 'dshwv-usage-hint'
+        accWarn.style.cssText = 'line-height:1.65;white-space:normal;margin:2px 0 4px'
+        accWarn.textContent = '检测到余额增加，请用下面的「余额校正」核对本区间累计到账。'
+        card.appendChild(accWarn)
+      }
+    }
+    // 「充值 / 余额校正」入口：只给固定的 DeepSeek（内置），放在「单价」下方、沿用同一行布局与按钮样式。
+    // 其它厂商、手动新增的 DeepSeek、仅改名为「DeepSeek（内置）」的模型都不会走到这里。
+    if (apiCanAdjustBalance(m)) {
+      var adjustmentRow = rowOf('余额校正', function () {
+        return (m.accounting && m.accounting.label) || '充值与余额调整'
+      }, function () { openBalanceAdjustment(modelId) }, '校正')
+      adjustmentRow.lastElementChild.setAttribute('data-action', 'balance-adjustment')
+    }
     // 币种不一致提示：今日已用按「自带币种」显示（会话事件为 CNY）。若与模型币种不同且没填汇率，
     // 今日预算提醒会被跳过（见 A 方案），这里给出可见的补救提示。
     var tuc = String((m && m.todayUsageCurrency) || '').toUpperCase()
@@ -2996,9 +3036,9 @@ function refreshUsageMain() {
       // 数值由“泡泡消失→下一次显示”的渲染自然采用最新 state
       if (d && d.ok && d.today && isFinite(Number(d.today.total))) {
         var recTotal = Number(d.today.total)
-        if (state.todayUsage === null || recTotal >= state.todayUsage) {
-          state.todayUsage = recTotal
-        }
+        state.todayUsage = recTotal
+        state.todayUsageCurrency = d.today.currency || 'CNY'
+        state.usageLabel = d.today.label || '本地估算'
       }
     })
     .catch(function () { if (usageMainEl && !usageMainEl.firstChild) usageMainEl.textContent = '记录加载失败' })
@@ -3015,6 +3055,233 @@ function uSectionTitle(leftTxt, rightTxt) {
   h.appendChild(r)
   return h
 }
+function accountingTime(at) {
+  try {
+    return new Date(at).toLocaleString('zh-CN', {
+      timeZone: 'Asia/Shanghai', hour12: false, year: 'numeric', month: '2-digit',
+      day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit'
+    })
+  } catch (err) { return String(at || '') }
+}
+var accountingMask = null
+function openBalanceAdjustment(modelId) {
+  // 只有固定的 DeepSeek（内置）能打开：入口由宿主下发的 canAdjustBalance 控制，这里再挡一次
+  if (!apiCanAdjustBalance(apiModelById(modelId)) || accountingMask) return
+  var adjustmentUrl = '/dsh-whale/balance-adjustments.json?modelId=' + encodeURIComponent(modelId)
+  closeApiModelPanel()
+  // 与「额度」「余额预警 / 今日预算」等窗口共用同一套骨架与样式：
+  // dshwv-usage-mask + dshwv-usage-card + dshwv-bubtitle/bubhint + apiPanelRow/apiTextInput + dshwv-bubbtns
+  var mask = document.createElement('div')
+  mask.className = 'dshwv-usage-mask'
+  mask.style.zIndex = '30000'
+  var card = document.createElement('form')
+  card.className = 'dshwv-usage-card'
+  card.style.width = 'min(430px,94vw)'
+  card.style.padding = '14px 16px'
+  card.style.boxSizing = 'border-box'
+  card.style.textAlign = 'left'
+  card.setAttribute('role', 'dialog')
+  card.setAttribute('aria-modal', 'true')
+  card.setAttribute('aria-label', 'DeepSeek（内置）余额校正')
+  // 内容可能比 82vh 高：中间这段自己滚，按钮行固定在底部（与 .dshwv-reswrap 同一做法）
+  var body = document.createElement('div')
+  body.style.cssText = 'min-height:0;overflow-y:auto;flex:1 1 auto'
+  var title = document.createElement('div')
+  title.className = 'dshwv-bubtitle'
+  title.textContent = '余额校正 · DeepSeek（内置）'
+  body.appendChild(title)
+  var introduction = document.createElement('div')
+  introduction.className = 'dshwv-bubhint'
+  introduction.style.cssText = 'margin:0 0 8px;white-space:normal;line-height:1.6;text-align:left'
+  introduction.textContent = '核对统计区间内的全部到账后，重新计算本地消费。此操作不会充值，也不会改变 DeepSeek 账户余额。'
+  body.appendChild(introduction)
+  var dates = apiSelectEl([], '')
+  body.appendChild(apiPanelRow('日期', dates))
+  var interval = document.createElement('div')
+  interval.className = 'dshwv-bubhint'
+  interval.style.cssText = 'margin:0 0 8px;white-space:pre-line;line-height:1.6;text-align:left'
+  body.appendChild(interval)
+  var credits = apiTextInput('', '未到账请填 0')
+  credits.inputMode = 'decimal'
+  credits.required = true
+  credits.autocomplete = 'off'
+  body.appendChild(apiPanelRow('累计到账', credits))
+  var creditsHint = document.createElement('div')
+  creditsHint.className = 'dshwv-bubhint'
+  creditsHint.style.cssText = 'margin:0 0 8px;white-space:normal;line-height:1.6;text-align:left'
+  body.appendChild(creditsHint)
+  var debits = apiTextInput('0', '没有请填 0')
+  debits.inputMode = 'decimal'
+  debits.autocomplete = 'off'
+  body.appendChild(apiPanelRow('非调用扣减', debits))
+  var debitsHint = document.createElement('div')
+  debitsHint.className = 'dshwv-bubhint'
+  debitsHint.style.cssText = 'margin:0 0 8px;white-space:normal;line-height:1.6;text-align:left'
+  body.appendChild(debitsHint)
+  var preview = document.createElement('div')
+  preview.className = 'dshwv-bubhint'
+  preview.style.cssText = 'margin:0 0 8px;white-space:normal;line-height:1.6;text-align:left;font-weight:700;color:#203170'
+  preview.setAttribute('aria-live', 'polite')
+  body.appendChild(preview)
+  var confirmRow = document.createElement('label')
+  confirmRow.style.cssText = 'display:flex;gap:6px;align-items:flex-start;flex:1;min-width:0;font-size:12px;color:#203170;cursor:pointer;line-height:1.5'
+  var confirm = document.createElement('input')
+  confirm.type = 'checkbox'
+  confirm.style.marginTop = '1px'
+  confirmRow.appendChild(confirm)
+  confirmRow.appendChild(document.createTextNode('我已核对本统计区间的全部到账和非调用扣减'))
+  body.appendChild(apiPanelRow('确认', confirmRow))
+  var status = document.createElement('div')
+  status.className = 'dshwv-bubhint'
+  status.setAttribute('role', 'status')
+  status.style.cssText = 'margin:0 0 6px;white-space:normal;line-height:1.6;text-align:left;color:#b33333'
+  status.textContent = '正在刷新余额…'
+  body.appendChild(status)
+  card.appendChild(body)
+  var busy = false
+  function close() {
+    if (busy) return
+    document.removeEventListener('keydown', keyHandler)
+    mask.remove()
+    accountingMask = null
+    // 关掉校正窗口后回到同一个设置菜单，并把焦点放回「校正」按钮
+    openApiModelMenu(modelId)
+    try {
+      var returnButton = apiModelMaskEl && apiModelMaskEl.querySelector('[data-action="balance-adjustment"]')
+      if (returnButton) returnButton.focus()
+    } catch (err) {}
+  }
+  function keyHandler(e) {
+    if (e.key === 'Escape') { e.preventDefault(); close() }
+    if (e.key === 'Tab') {
+      var focusable = Array.prototype.filter.call(card.querySelectorAll('button,input,select'), function (el) {
+        return !el.disabled && el.style.display !== 'none'
+      })
+      var first = focusable[0], last = focusable[focusable.length - 1]
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus() }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus() }
+    }
+  }
+  // 按钮行与其它窗口完全一致：.dshwv-bubbtns + apiBtn 的标准按钮样式（不再自绘尺寸/配色）
+  var actions = document.createElement('div')
+  actions.className = 'dshwv-bubbtns'
+  var reload = apiBtn('重新读取', 'dshwv-bubbtn dshwv-bubbtn-no', function () { load() })
+  var reset = apiBtn('撤销该日校正', 'dshwv-bubbtn dshwv-bubbtn-no', function () { submit('reset') })
+  var save = apiBtn('保存校正', 'dshwv-bubbtn dshwv-bubbtn-ok', function () { submit('save') })
+  actions.appendChild(reload)
+  actions.appendChild(reset)
+  actions.appendChild(apiBtn('取消', 'dshwv-bubbtn dshwv-bubbtn-no', function () { close() }))
+  actions.appendChild(save)
+  card.appendChild(actions)
+  mask.appendChild(card)
+  mask.addEventListener('click', function (e) { if (e.target === mask) close() })
+  document.body.appendChild(mask)
+  accountingMask = mask
+  document.addEventListener('keydown', keyHandler)
+  var rows = []
+  var selected = null
+  function renderSelection() {
+    selected = rows.find(function (row) { return row.day === dates.value }) || null
+    save.disabled = !selected || busy
+    reset.disabled = !selected || !selected.correctedAt || busy
+    if (!selected) {
+      interval.textContent = '尚无可校正的余额观测。请先配置 DeepSeek API key 并成功刷新余额。'
+      creditsHint.textContent = ''
+      debitsHint.textContent = ''
+      return
+    }
+    interval.textContent = '统计起点：' + accountingTime(selected.firstObservedAt) +
+      '\n最近观测：' + accountingTime(selected.lastObservedAt) +
+      '\n起点余额 ' + usageMoney(selected.openingBalance, selected.currency) +
+      ' → 当前余额 ' + usageMoney(selected.currentBalance, selected.currency) +
+      '\n当前：' + selected.label + ' ' + usageMoney(selected.amount, selected.currency)
+    creditsHint.textContent = '本统计区间累计到账金额（' + selected.currency + '，未到账请填 0）：包括充值、赠金等；多次到账请填合计，不要只填最后一笔。'
+    debitsHint.textContent = '非调用造成的余额减少（' + selected.currency + '，没有请填 0）：到期赠金、余额退回等。仅填写统计起点之后的金额；保存会替换之前的校正值。'
+    credits.value = selected.credits == null ? '' : String(selected.credits)
+    debits.value = selected.otherDebits == null ? '0' : String(selected.otherDebits)
+    confirm.checked = false
+    updatePreview()
+  }
+  function updatePreview() {
+    if (!selected || credits.value.trim() === '' || !isFinite(Number(credits.value)) || !isFinite(Number(debits.value))) {
+      preview.textContent = '填写完整金额后显示校正预览'
+      return
+    }
+    var amount = selected.openingBalance + Number(credits.value) - Number(debits.value || 0) - selected.currentBalance
+    preview.textContent = amount < -0.000000005 ? '校正后为负数，请核对金额和统计区间' : '校正后消费：' + usageMoney(Math.max(0, amount), selected.currency)
+  }
+  credits.addEventListener('input', updatePreview)
+  debits.addEventListener('input', updatePreview)
+  dates.addEventListener('change', renderSelection)
+  function load() {
+    if (busy) return
+    busy = true
+    save.disabled = true
+    reset.disabled = true
+    reload.disabled = true
+    status.textContent = '正在刷新余额…'
+    fetch(adjustmentUrl, { cache: 'no-store' })
+      .then(function (r) { return r.json() })
+      .then(function (data) {
+        if (!data.ok) throw new Error(data.error || '读取失败')
+        rows = data.days || []
+        dates.innerHTML = ''
+        rows.forEach(function (row) {
+          var option = document.createElement('option')
+          option.value = row.day
+          option.textContent = row.day + ' · ' + row.label
+          dates.appendChild(option)
+        })
+        status.textContent = data.error ? '余额暂未刷新：' + data.error : ''
+      })
+      .catch(function (err) { status.textContent = err.message || '读取失败' })
+      .finally(function () { busy = false; reload.disabled = false; renderSelection(); dates.focus() })
+  }
+  function submit(action) {
+    if (busy || !selected) return
+    if (action !== 'reset' && !confirm.checked) { status.textContent = '请先勾选确认，核对本统计区间的全部余额调整。'; return }
+    busy = true
+    save.disabled = true
+    reset.disabled = true
+    reload.disabled = true
+    status.textContent = '正在保存…'
+    fetch(adjustmentUrl, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        modelId: modelId, day: selected.day, revision: selected.revision, action: action,
+        credits: credits.value.trim(), otherDebits: debits.value.trim() || '0', confirmed: confirm.checked
+      })
+    })
+      .then(function (r) { return r.json() })
+      .then(function (data) {
+        if (!data.ok) throw new Error(data.error || '保存失败')
+        // 保存后立刻用返回的摘要刷新该模型条目：关窗回到设置菜单时显示的就是新金额
+        var model = apiModelById(modelId)
+        var currentDay = new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10)
+        if (apiCanAdjustBalance(model) && data.summary && data.summary.day === currentDay) {
+          model.balance = data.summary.currentBalance
+          model.currency = data.summary.currency
+          model.todayUsage = data.summary.amount
+          model.todayUsageCurrency = data.summary.currency
+          model.usageSource = data.summary.source
+          model.usageLabel = data.summary.label
+          model.accounting = data.summary
+          model.error = null
+        }
+        busy = false
+        close()
+        refresh(true)
+        loadApiModels(function () {
+          if (usagePanelOpen) rebuildUsageSubShell()
+        }, true)
+      })
+      .catch(function (err) { status.textContent = err.message || '保存失败' })
+      .finally(function () { busy = false; save.disabled = !selected; reset.disabled = !selected || !selected.correctedAt; reload.disabled = false })
+  }
+  card.addEventListener('submit', function (e) { e.preventDefault(); submit('save') })
+  load()
+}
+
 function fillUsagePanel(d) {
   var hostEl = usageMainEl || usagePanel
   hostEl.innerHTML = ''
@@ -3028,10 +3295,14 @@ function fillUsagePanel(d) {
   var today = d.today || {}
   var todayModels = today.models || []
   var hasEvToday = todayModels.length > 0
-  // ① 今日模型消费(独立容器+滚动)；标题不带下分隔线
-  var tToday = uSectionTitle('今日模型消费', usageMoney(today.total))
-  tToday.style.borderBottom = 'none'
-  wrap.appendChild(tToday)
+  // ① 本机模型费用（所有模型的本地会话估算）
+  // 「已观测消费」是 DeepSeek 账户口径（余额观测），已移到 小鲸鱼记账 → DeepSeek（内置）→ 设置 里，
+  // 与「余额校正」放在一起，避免在这里被误读成"全模型合计"。
+  var modelTitle = uSectionTitle('本机模型费用', usageMoney(today.modelTotal, 'CNY'))
+  // 标题与下方模型列表之间不再画分隔线（列表本身有边框，够了）
+  modelTitle.style.borderBottom = 'none'
+  modelTitle.title = '按本机 DSH 会话计算，不按账户余额比例缩放；两者覆盖范围不同。'
+  wrap.appendChild(modelTitle)
   var todayBox = document.createElement('div')
   todayBox.className = 'dshwv-usage-scroll dshwv-usage-today'
   if (hasEvToday) {
@@ -3049,7 +3320,7 @@ function fillUsagePanel(d) {
   } else if ((today.total || 0) > 0) {
     var noM = document.createElement('div')
     noM.className = 'dshwv-usage-hint'
-    noM.textContent = '今日总额来自余额差值,暂不含模型明细(启用会话记录后将按模型展示)'
+    noM.textContent = '暂无本机会话费用明细；账户余额观测仍独立记账。'
     todayBox.appendChild(noM)
   } else {
     var empty = document.createElement('div')
@@ -3064,7 +3335,7 @@ function fillUsagePanel(d) {
   sep7.style.borderTop = '1px solid rgba(32,49,112,.15)'
   sep7.style.margin = '6px 0'
   wrap.appendChild(sep7)
-  var t7 = uSectionTitle('近7天使用记录', usageMoney(d.total7))
+  var t7 = uSectionTitle('近7天使用记录', usageMoney(d.total7, d.total7Currency))
   t7.style.borderBottom = 'none'
   wrap.appendChild(t7)
   var daysBox = document.createElement('div')
@@ -3074,9 +3345,10 @@ function fillUsagePanel(d) {
     r.className = 'dshwv-usage-row'
     var n = document.createElement('span')
     n.textContent = usageDayLabel(row.date)
+    n.title = row.label || ''
     r.appendChild(n)
     var c = document.createElement('span')
-    c.textContent = usageMoney(row.total)
+    c.textContent = usageMoney(row.total, row.currency)
     r.appendChild(c)
     daysBox.appendChild(r)
   })
@@ -3875,8 +4147,8 @@ function usageDrawBarChart(body, secTitle, days, opts) {
     g.fillStyle = '#9fb0d9'
     g.font = '10px sans-serif'
     g.textAlign = 'right'
-    g.fillText(usageMoney(max), padL - 4, padT + 8)
-    g.fillText(usageMoney(max / 2), padL - 4, padT + ih / 2 + 3)
+    g.fillText(usageMoney(max, opts.currency), padL - 4, padT + 8)
+    g.fillText(usageMoney(max / 2, opts.currency), padL - 4, padT + ih / 2 + 3)
     g.fillText('¥0', padL - 4, padT + ih + 4)
   }
   function move(ev) {
@@ -3889,7 +4161,7 @@ function usageDrawBarChart(body, secTitle, days, opts) {
     paint(hover)
     if (hover >= 0) {
       tip.style.display = 'block'
-      tip.textContent = bars[hover].day.date + '  ' + usageMoney(bars[hover].day.total)
+      tip.textContent = bars[hover].day.date + '  ' + usageMoney(bars[hover].day.total, opts.currency)
       var wr = wrap.getBoundingClientRect()
       var tx = ev.clientX - wr.left + 10
       if (tx + 130 > wr.width) tx = ev.clientX - wr.left - 140
@@ -4025,31 +4297,37 @@ function fillUsageRecordsWindow(d) {
   var allDays = ((d.all && d.all.days) || []).slice().sort(function (a, b) { return a.date < b.date ? -1 : 1 })
   var evAll = ((d.all && d.all.events) || []).slice()
   // ① 概览头
-  var sumAll = 0
+  var sumAllByCurrency = {}
+  var chartCurrency = (d.today && d.today.currency) || 'CNY'
   var maxDay = null
   for (var s1 = 0; s1 < allDays.length; s1++) {
-    sumAll += Number(allDays[s1].total) || 0
-    if (!maxDay || Number(allDays[s1].total) > Number(maxDay.total)) maxDay = allDays[s1]
+    var dayCurrency = allDays[s1].currency || 'CNY'
+    sumAllByCurrency[dayCurrency] = (sumAllByCurrency[dayCurrency] || 0) + (Number(allDays[s1].total) || 0)
+    if (dayCurrency === chartCurrency && (!maxDay || Number(allDays[s1].total) > Number(maxDay.total))) maxDay = allDays[s1]
   }
   var ov = document.createElement('div')
   ov.className = 'dshwv-usage-oview'
   var ovL = document.createElement('div')
-  ovL.textContent = '全部消费'
+  ovL.textContent = '全部记录合计'
   ov.appendChild(ovL)
   var ovN = document.createElement('div')
   ovN.className = 'dshwv-usage-oview-num'
-  ovN.textContent = usageMoney(sumAll)
+  ovN.textContent = Object.keys(sumAllByCurrency).map(function (cur) { return usageMoney(sumAllByCurrency[cur], cur) }).join(' + ') || usageMoney(0, chartCurrency)
   ov.appendChild(ovN)
   var ovS = document.createElement('div')
   ovS.className = 'dshwv-usage-hint'
-  ovS.textContent = '共 ' + evAll.length + ' 笔明细' + (maxDay ? ' · 峰值 ' + maxDay.date + ' ' + usageMoney(maxDay.total) : '')
+  ovS.textContent = '共 ' + evAll.length + ' 笔明细' + (maxDay ? ' · 峰值 ' + maxDay.date + ' ' + usageMoney(maxDay.total, maxDay.currency) : '')
   ov.appendChild(ovS)
+  var sourceNote = document.createElement('div')
+  sourceNote.className = 'dshwv-usage-hint'
+  sourceNote.textContent = '按各日标注口径汇总；本机模型明细为估算，与账户消费覆盖范围不同。'
+  ov.appendChild(sourceNote)
   body.appendChild(ov)
   var detailBox = null
   // ② 统计图表(默认折叠,懒渲染)
   usageCollapseBlock(body, '统计图表(近30天 / 模型占比)', false, function (inner) {
-    usageDrawBarChart(inner, '近30天消费(绿柱=今天,点柱定位到当日)', allDays.slice(-30), {
-      today: usageTodayKeyStr(),
+    usageDrawBarChart(inner, '近30天消费 · ' + chartCurrency + '（点柱查看当日）', allDays.filter(function (row) { return (row.currency || 'CNY') === chartCurrency }).slice(-30), {
+      today: usageTodayKeyStr(), currency: chartCurrency,
       onPick: function (date) {
         try {
           if (!detailBox) return
@@ -4066,9 +4344,9 @@ function fillUsageRecordsWindow(d) {
       },
     })
     var todayAgg = usageAggModels(d.today && d.today.models ? [{ models: d.today.models }] : [])
-    usageRatioRows(inner, '今日模型占比', todayAgg, usageMoney((d.today && d.today.total) || 0))
+    usageRatioRows(inner, '今日模型费用 · 估算', todayAgg, usageMoney((d.today && d.today.modelTotal) || 0))
     var sevenAgg = usageAggModels(d.days7 || [])
-    usageRatioRows(inner, '近7天模型占比', sevenAgg, usageMoney((d.total7) || 0))
+    usageRatioRows(inner, '近7天模型费用 · 估算', sevenAgg, usageMoney((d.days7 || []).reduce(function (sum, row) { return sum + (Number(row.modelTotal) || 0) }, 0)))
   })
   // ③ 每日与逐条明细(默认折叠;搜索/限量加载)
   detailBox = usageCollapseBlock(body, '每日与逐条明细', false, function (inner) {
@@ -4090,7 +4368,8 @@ function fillUsageRecordsWindow(d) {
       ;(evMap[day] = evMap[day] || []).push(ev)
     })
     var dayTot = {}
-    allDays.forEach(function (dx) { dayTot[dx.date] = Number(dx.total) || 0 })
+    var dayMeta = {}
+    allDays.forEach(function (dx) { dayTot[dx.date] = Number(dx.total) || 0; dayMeta[dx.date] = dx })
     var todayKeyStr2 = usageTodayKeyStr()
     function dayGroup(day, evs) {
       var row = document.createElement('div')
@@ -4110,7 +4389,8 @@ function fillUsageRecordsWindow(d) {
       var dayV = dayTot[day]
       if ((dayV === undefined || dayV === 0) && day === todayKeyStr2 && d.today && isFinite(Number(d.today.total))) dayV = Number(d.today.total)
       if (dayV === undefined || dayV === null) dayV = evs.reduce(function (a, x) { return a + (Number(x.cost) || 0) }, 0)
-      c.textContent = usageMoney(dayV)
+      c.textContent = usageMoney(dayV, dayMeta[day] && dayMeta[day].currency)
+      name.title = (dayMeta[day] && dayMeta[day].label) || '本地估算'
       row.appendChild(c)
       var chev = document.createElement('span')
       chev.className = 'dshwv-usage-chev'
@@ -4143,6 +4423,7 @@ function fillUsageRecordsWindow(d) {
               var c2 = document.createElement('span')
               c2.style.flex = '0 0 auto'
               c2.textContent = usageMoney(ev.cost)
+              c2.title = '本地估算：' + Number(ev.cost || 0).toFixed(8) + ' CNY'
               r2.appendChild(c2)
               detail.appendChild(r2)
             }
@@ -5770,7 +6051,7 @@ function bubbleModuleSummary(m) {
   if (m.type === 'balance') return bubbleIsModelMod(m) ? ('余额·' + ((apiModelBalanceInfo(m.modelId) || {}).name || m.modelId)) : '余额数值'
   if (m.type === 'today') return bubbleIsModelMod(m) ? ('今日已用·' + ((apiModelBalanceInfo(m.modelId) || {}).name || m.modelId)) : '今日已用'
   if (m.type === 'quota') return '额度·' + ((apiModelById(m.modelId) || {}).name || m.modelId)
-  if (m.type === 'plan') return '订阅额度·' + ((apiModelById(m.modelId) || {}).name || m.modelId)
+  if (m.type === 'plan') return bubblePlanModuleLabel(m)
   if (m.type === 'peak' || m.type === 'nextpeak') return bubblePeakModuleLabel(m)
   if (m.type === 'image') return '图片/动图'
   if (m.type === 'randimg') return '随机图片' + (m.imgs && m.imgs.length ? '(' + m.imgs.length + '张)' : '(空)')
@@ -5787,7 +6068,7 @@ function bubbleModuleListLabel(m) {
   if (m.type === 'balance') return bubbleIsModelMod(m) ? ('余额·' + ((apiModelBalanceInfo(m.modelId) || {}).name || m.modelId)) : '余额数值'
   if (m.type === 'today') return bubbleIsModelMod(m) ? ('今日已用·' + ((apiModelBalanceInfo(m.modelId) || {}).name || m.modelId)) : '今日已用'
   if (m.type === 'quota') return '额度·' + ((apiModelById(m.modelId) || {}).name || m.modelId)
-  if (m.type === 'plan') return '订阅额度·' + ((apiModelById(m.modelId) || {}).name || m.modelId)
+  if (m.type === 'plan') return bubblePlanModuleLabel(m)
   if (m.type === 'peak' || m.type === 'nextpeak') return bubblePeakModuleLabel(m)
   if (m.type === 'image') return '图片/动图'
   if (m.type === 'randimg') return '随机图片' + (m.imgs && m.imgs.length ? '(' + m.imgs.length + '张)' : '(空)')
@@ -6798,8 +7079,8 @@ function openQuickModuleEditor(m, anchorBtn) {
     var isModelBal = bubbleIsModelMod(m) && (m.type === 'balance' || m.type === 'today')
     var isModelQuota = bubbleIsModelMod(m) && m.type === 'quota'
     var isModelPlan = bubbleIsModelMod(m) && m.type === 'plan'
-    inp.placeholder = isModelPlan ? '例: 额度已用 {plan} · {plan_reset}' : (isModelQuota ? '例: 额度 {quota} · 剩 {quota_left}' : (isModelBal ? '例: {balance} 或 今日 {today}' : (m.type === 'balance' ? '例: {balance_ds}' : (m.type === 'today' ? '例: 今日已用 {expense_ds}' : (bubbleIsPeakCount(m) ? '例: 距空闲 {countdown}' : '例: 当前 {status}')))))
-    inp.title = '可用占位符(英文): ' + (isModelPlan ? '{plan} / {plan_left} / {plan_reset}' : (isModelQuota ? '{quota} / {quota_used} / {quota_left} / {quota_total} / {quota_reset}' : (isModelBal ? '{balance} / {today}' : (m.type === 'peak' || m.type === 'nextpeak' ? '{status} / {countdown}' : (m.type === 'balance' ? '{balance_ds}' : '{expense_ds}')))))
+    inp.placeholder = isModelPlan ? '例: {plan} 额度 · {plan_reset} 刷新时间' : (isModelQuota ? '例: 额度 {quota} · 剩 {quota_left}' : (isModelBal ? '例: {balance} 或 今日 {today}' : (m.type === 'balance' ? '例: {balance_ds}' : (m.type === 'today' ? '例: 今日已用 {expense_ds}' : (bubbleIsPeakCount(m) ? '例: 距空闲 {countdown}' : '例: 当前 {status}')))))
+    inp.title = '可用占位符(英文): ' + (isModelPlan ? '{plan} 额度 / {plan_left} 剩余 / {plan_reset} 刷新时间（多窗口时随「显示样式」所选窗口变化）' : (isModelQuota ? '{quota} / {quota_used} / {quota_left} / {quota_total} / {quota_reset}' : (isModelBal ? '{balance} / {today}' : (m.type === 'peak' || m.type === 'nextpeak' ? '{status} / {countdown}' : (m.type === 'balance' ? '{balance_ds}' : '{expense_ds}')))))
     inp.addEventListener('input', function () { m.tpl = inp.value; changed() })
     r.appendChild(inp)
     var qb2 = document.createElement('button')
@@ -6813,6 +7094,25 @@ function openQuickModuleEditor(m, anchorBtn) {
     box.appendChild(r)
   }
   tplRow()
+  // 订阅额度模块的「显示样式」= 选时间窗口（多窗口厂商，如 OpenCode Go 的 5h / 周 / 月）
+  if (m.type === 'plan' && (apiPlanMultiWin(m.modelId) || apiPlanWinList(m.modelId))) {
+    var wrow = qRow()
+    wrow.appendChild(qLabel('显示样式'))
+    var wsel = document.createElement('select')
+    for (var wi = 0; wi < BUBBLE_PLAN_WIN_OPTS.length; wi++) {
+      var wo = document.createElement('option')
+      wo.value = BUBBLE_PLAN_WIN_OPTS[wi][0]
+      wo.textContent = BUBBLE_PLAN_WIN_OPTS[wi][1]
+      wsel.appendChild(wo)
+    }
+    wsel.value = bubblePlanWinOf(m)
+    wsel.style.flex = '1'
+    wsel.style.minWidth = '0'
+    wrow.appendChild(wsel)
+    box.appendChild(wrow)
+    dshwCustSel(wsel)
+    wsel.addEventListener('change', function () { m.planWin = wsel.value || 'all'; changed() })
+  }
   if (m.type === 'peak' || m.type === 'nextpeak') {
     // 显示样式(与编辑窗口一致)
     var srow = qRow()
@@ -7004,6 +7304,32 @@ function renderBubblePal() {
   if (apiModelsLoaded) {
     apiModels.forEach(function (am) {
       if (!am || !am.id || am.builtin) return
+      var planSupported = apiPlanSupport(am.id)
+      // 只有「一个接口返回多个窗口」的额度厂商（如 OpenCode Go）才把调色板收成一个「额度」模块；
+      // 单窗口的既有额度厂商（智谱 / Kimi / MiniMax Coding）保持上游原有的三个模块不变
+      if (planSupported && apiPlanMultiWin(am.id)) {
+        // 订阅额度厂商（OpenCode Go / 智谱 / Kimi / MiniMax Coding 等）：这类厂商本来就没有余额接口，
+        // 只给一个「额度」模块 —— 时间窗口（5h / 周 / 月 / 全部）与显示内容都在模块编辑器里选，
+        // 不再并列「余额 / 手动额度 / 订阅额度」三个模块。
+        var key4 = 'pq:' + am.id
+        var chip4 = document.createElement('div')
+        chip4.className = 'dshwv-palchip'
+        chip4.setAttribute('data-pal', key4)
+        chip4.textContent = '额度·' + am.name
+        var planWinHint = apiPlanMultiWin(am.id) ? '；「显示样式」可选时间窗口（全部 / 5h / 周 / 月）' : ''
+        chip4.title = '该厂商的订阅额度（由厂商接口读取，非手动）；模板变量 {plan} 额度 / {plan_reset} 刷新时间 / {plan_left} 剩余' + planWinHint
+        chip4.draggable = true
+        chip4.addEventListener('click', function (e) {
+          e.stopPropagation()
+          bubbleModuleAdd({ type: 'plan', modelId: am.id, size: 8, tpl: '{plan} · {plan_reset}', planWin: 'all' })
+        })
+        chip4.addEventListener('dragstart', function (e) {
+          try { e.dataTransfer.setData('text/plain', key4) } catch (err) {}
+          bubbleDragKey = key4
+        })
+        bubblePalEl.appendChild(chip4)
+        return
+      }
       var key = 'bal:' + am.id
       var chip2 = document.createElement('div')
       chip2.className = 'dshwv-palchip'
@@ -7037,25 +7363,6 @@ function renderBubblePal() {
         bubbleDragKey = key3
       })
       bubblePalEl.appendChild(chip3)
-      // 厂商订阅额度模块（kind='quota' 的厂商，如智谱/Kimi/MiniMax Coding）：palette key = pq:<modelId>
-      if (apiPlanSupport(am.id)) {
-        var key4 = 'pq:' + am.id
-        var chip4 = document.createElement('div')
-        chip4.className = 'dshwv-palchip'
-        chip4.setAttribute('data-pal', key4)
-        chip4.textContent = '订阅额度·' + am.name
-        chip4.title = '该厂商的订阅额度（由厂商接口读取，非手动）；模板变量 {plan} / {plan_left} / {plan_reset}'
-        chip4.draggable = true
-        chip4.addEventListener('click', function (e) {
-          e.stopPropagation()
-          bubbleModuleAdd({ type: 'plan', modelId: am.id, size: 8, tpl: '额度 {plan}' })
-        })
-        chip4.addEventListener('dragstart', function (e) {
-          try { e.dataTransfer.setData('text/plain', key4) } catch (err) {}
-          bubbleDragKey = key4
-        })
-        bubblePalEl.appendChild(chip4)
-      }
     })
   } else if (apiModelsError) {
     var chipErr = document.createElement('div')
@@ -7305,11 +7612,11 @@ function bubblePaletteModule(key) {
     if (!am1) return null
     return { type: 'quota', modelId: am1.id, size: 8, tpl: '已用 {quota} · 剩 {quota_left}' }
   }
-  // 厂商订阅额度模块（palette key = pq:<modelId>）
+  // 厂商订阅额度模块（palette key = pq:<modelId>）：时间窗口由模块里的「显示样式」决定
   if (typeof key === 'string' && key.indexOf('pq:') === 0) {
     var am2 = apiModelById(key.slice(3))
     if (!am2) return null
-    return { type: 'plan', modelId: am2.id, size: 8, tpl: '额度 {plan}' }
+    return { type: 'plan', modelId: am2.id, size: 8, tpl: '{plan} · {plan_reset}', planWin: 'all' }
   }
   if (key === 'random') return bubbleCloneModule(bubbleDefaultSecondModules()[0])
   if (typeof key === 'string' && key.indexOf('lib:') === 0) {
@@ -7972,7 +8279,7 @@ var bubbleColorOpenMenu = null // 当前展开的颜色下拉(纯色/跑马灯,�
 // —— 弹层/菜单层级统一助手(所有下拉与弹窗据此取高于当前可见层,避免互相压制) ——
 function visibleTopZ() {
   var top = 20500
-  var cand = [bubbleMask, bubbleItemMask, moduleMask, usageMoreMask, qeditEl, window.__dshwRemindMask]
+  var cand = [bubbleMask, bubbleItemMask, moduleMask, usageMoreMask, qeditEl, window.__dshwRemindMask, apiModelMaskEl, accountingMask]
   function eff(el) {
     try {
       if (!el) return 0
@@ -9757,6 +10064,8 @@ var state = {
   balance: null,
   currency: null,
   todayUsage: null,
+  todayUsageCurrency: 'CNY',
+  usageLabel: '本地估算',
   isPeak: false,
   status: 'loading',
   message: '',
@@ -10366,7 +10675,7 @@ function bubbleAmountText() {
   return fmt(v, state.currency)
 }
 function bubbleTodayText() {
-  return '今日已用 ' + (state.todayUsage !== null && state.todayUsage !== undefined ? fmt(state.todayUsage, state.currency) : '--')
+  return (state.usageLabel || '今日已用') + ' ' + (state.todayUsage !== null && state.todayUsage !== undefined ? fmt(state.todayUsage, state.todayUsageCurrency || state.currency) : '--')
 }
 // 模块「内容」模板:占位符统一英文(便于兼容其他模型 API 时区分来源/字段):
 //   {expense_ds} 今日已用金额 · {balance_ds} 余额 · {status} 高峰/空闲状态字 · {countdown} 倒计时
@@ -10539,36 +10848,160 @@ function apiPlanPctText(v) {
   if (v === null || v === undefined) return '--'
   return (Number(v) || 0).toFixed(1).replace(/\.0$/, '') + '%'
 }
-function apiPlanUsedText(modelId) {
+// —— 多窗口订阅额度（如 OpenCode Go 的 rolling / weekly / monthly）——
+// 模块的「显示样式」= 选哪个时间窗口：all 全部三窗口 / rolling 5h / weekly 周 / monthly 月。
+// 选中具体窗口时输出会带上窗口标签（如 `5h 2%`），避免看不出是哪个时间段。
+var BUBBLE_PLAN_WIN_OPTS = [
+  ['all', '全部（5h / 周 / 月）'],
+  ['rolling', '5h'],
+  ['weekly', '周'],
+  ['monthly', '月'],
+]
+function bubblePlanWinOf(m) {
+  m = m || {}
+  var w = String(m.planWin || 'all')
+  for (var i = 0; i < BUBBLE_PLAN_WIN_OPTS.length; i++) { if (BUBBLE_PLAN_WIN_OPTS[i][0] === w) return w }
+  return 'all'
+}
+function bubblePlanWinLabel(w) {
+  for (var i = 0; i < BUBBLE_PLAN_WIN_OPTS.length; i++) { if (BUBBLE_PLAN_WIN_OPTS[i][0] === w) return BUBBLE_PLAN_WIN_OPTS[i][1] }
+  return BUBBLE_PLAN_WIN_OPTS[0][1]
+}
+// 订阅额度模块在编辑列表 / 模块库里的名字（带所选窗口，便于区分同一个模型的多个模块）
+function bubblePlanModuleLabel(m) {
+  m = m || {}
+  var nm = (apiModelById(m.modelId) || {}).name || m.modelId
+  var w = bubblePlanWinOf(m)
+  return '额度·' + nm + (w === 'all' ? '' : '（' + bubblePlanWinLabel(w) + '）')
+}
+// 该模型的厂商模板是否声明了多窗口额度（决定编辑器里要不要给「显示样式」下拉）
+function apiPlanMultiWin(modelId) {
+  var am = apiModelById(modelId)
+  if (!am) return false
+  var list = apiTemplates || []
+  for (var i = 0; i < list.length; i++) {
+    if (list[i] && list[i].id === am.provider) {
+      var q = list[i].quota
+      return !!(q && q.json && q.json.windows && q.json.windows.length)
+    }
+  }
+  return false
+}
+function apiPlanWinList(modelId) {
+  var p = apiPlanOf(modelId)
+  return (p && p.ok && p.windows && p.windows.length) ? p.windows : null
+}
+// 按窗口取「已用% / 剩余%」文本；非多窗口厂商返回 null（走原有单窗口逻辑）
+function apiPlanPctWinText(modelId, win, left) {
+  var list = apiPlanWinList(modelId)
+  if (!list) return null
+  function one(w) {
+    var v = w.usedPct
+    if (v === null || v === undefined) return '--'
+    var pct = left ? Math.max(0, 100 - Number(v)) : Number(v)
+    return (w.label ? (w.label + ' ') : '') + apiPlanPctText(pct)
+  }
+  if (win && win !== 'all') {
+    for (var i = 0; i < list.length; i++) { if (list[i].key === win) return one(list[i]) }
+    return '--'
+  }
+  var parts = []
+  for (var j = 0; j < list.length; j++) parts.push(one(list[j]))
+  return parts.join(' · ')
+}
+// 按窗口取「重置倒计时」文本；非多窗口厂商返回 null
+function apiPlanResetWinText(modelId, win) {
+  var list = apiPlanWinList(modelId)
+  if (!list) return null
+  function one(w, short) {
+    var ms = apiPlanResetMs(w.resetAt)
+    if (ms === null) return '--'
+    var t = short ? apiPlanCountdownShortText(ms) : apiPlanCountdownText(ms)
+    return t || '--'
+  }
+  if (win && win !== 'all') {
+    for (var i = 0; i < list.length; i++) { if (list[i].key === win) return one(list[i], true) }
+    return '--'
+  }
+  var parts = []
+  for (var j = 0; j < list.length; j++) parts.push(one(list[j], true))
+  return parts.join(' · ')
+}
+function apiPlanUsedText(modelId, win) {
+  var t = apiPlanPctWinText(modelId, win, false)
+  if (t !== null) return t
   var p = apiPlanOf(modelId)
   if (!p || !p.ok) return '--'
   return apiPlanPctText(p.usedPct)
 }
-function apiPlanLeftText(modelId) {
+function apiPlanLeftText(modelId, win) {
+  var t = apiPlanPctWinText(modelId, win, true)
+  if (t !== null) return t
   var p = apiPlanOf(modelId)
   if (!p || !p.ok) return '--'
   return apiPlanPctText(p.remainPct)
 }
-function apiPlanResetText(modelId) {
-  var p = apiPlanOf(modelId)
-  if (!p || !p.ok || p.resetAt === null || p.resetAt === undefined || p.resetAt === '') return '--'
-  var t = p.resetAt
-  var ms = null
-  if (typeof t === 'number') ms = t < 1e12 ? t * 1000 : t // 秒 / 毫秒都兼容
-  else { var pd = Date.parse(String(t)); if (isFinite(pd)) ms = pd }
-  if (ms === null) return String(t)
+// 重置时间归一成毫秒（秒 / 毫秒 / 日期字符串都兼容）；解析不出来返回 null
+function apiPlanResetMs(t) {
+  if (t === null || t === undefined || t === '') return null
+  if (typeof t === 'number') return t < 1e12 ? t * 1000 : t // 秒 / 毫秒都兼容
+  var pd = Date.parse(String(t))
+  return isFinite(pd) ? pd : null
+}
+// 倒计时文本（长写法，单窗口用）
+function apiPlanCountdownText(ms) {
   var left = ms - Date.now()
-  if (!isFinite(left)) return String(t)
+  if (!isFinite(left)) return ''
   if (left <= 0) return '即将重置'
   var h = Math.floor(left / 3600000)
   var d = Math.floor(h / 24)
   if (d > 0) return d + '天' + (h % 24) + '小时后重置'
   return h + '小时' + Math.floor((left % 3600000) / 60000) + '分后重置'
 }
+// 倒计时文本（紧凑写法，多窗口用：5d21h / 3h53m）——单位统一用 d/h/m，不掺中文
+// 不带「后重置」字样：多窗口模块里窗口标签已说明它是什么（如 `5h 2% · 3h53m`）
+function apiPlanCountdownShortText(ms) {
+  var left = ms - Date.now()
+  if (!isFinite(left)) return ''
+  if (left <= 0) return '即将重置'
+  var m = Math.floor(left / 60000)
+  var h = Math.floor(m / 60)
+  var d = Math.floor(h / 24)
+  if (d > 0) return d + 'd' + (h % 24) + 'h'
+  if (h > 0) return h + 'h' + (m % 60) + 'm'
+  return m + 'm'
+}
+function apiPlanResetText(modelId, win) {
+  var t = apiPlanResetWinText(modelId, win)
+  if (t !== null) return t
+  var p = apiPlanOf(modelId)
+  if (!p || !p.ok || p.resetAt === null || p.resetAt === undefined || p.resetAt === '') return '--'
+  var ms = apiPlanResetMs(p.resetAt)
+  if (ms === null) return String(p.resetAt)
+  var txt = apiPlanCountdownText(ms)
+  return txt || String(p.resetAt)
+}
 function apiPlanSummary(modelId) {
   var p = apiPlanOf(modelId)
   if (!p) return '读取中…'
   if (!p.ok) return p.hide ? '--' : (p.error || '读取失败')
+  // v0.3.1：多窗口额度（如 OpenCode Go 的 5h / 周 / 月）逐窗口展示：`5h 12.5% · 2h55m后重置 | 周 …`
+  if (p.windows && p.windows.length) {
+    var parts = []
+    for (var i = 0; i < p.windows.length; i++) {
+      var w = p.windows[i] || {}
+      var seg = w.label ? (w.label + ' ') : ''
+      seg += apiPlanPctText(w.usedPct)
+      var ms = apiPlanResetMs(w.resetAt)
+      if (ms !== null) {
+        var rt = apiPlanCountdownShortText(ms)
+        if (rt) seg += ' · ' + rt
+      }
+      parts.push(seg)
+    }
+    if (p.level) parts.push(p.level)
+    return parts.join(' | ')
+  }
   var s = '已用 ' + apiPlanUsedText(modelId) + ' · ' + apiPlanResetText(modelId)
   if (p.weeklyUsedPct !== null && p.weeklyUsedPct !== undefined) s += ' · 周 ' + apiPlanPctText(p.weeklyUsedPct)
   if (p.level) s += ' · ' + p.level
@@ -10592,18 +11025,19 @@ function bubbleContentTokenMap(m) {
     map['quota_left'] = apiQuotaLeftText(m.modelId)
     map['quota_total'] = apiQuotaTotalText(m.modelId)
     map['quota_reset'] = apiQuotaResetText(m.modelId)
-    // 厂商订阅额度占位符（kind='quota' 的厂商）
-    map['plan'] = apiPlanUsedText(m.modelId)
+    // 厂商订阅额度占位符（kind='quota' 的厂商）：按模块「显示样式」选的窗口取数
+    var pwin = bubblePlanWinOf(m)
+    map['plan'] = apiPlanUsedText(m.modelId, pwin)
     map['plan_used'] = map['plan']
-    map['plan_left'] = apiPlanLeftText(m.modelId)
-    map['plan_reset'] = apiPlanResetText(m.modelId)
+    map['plan_left'] = apiPlanLeftText(m.modelId, pwin)
+    map['plan_reset'] = apiPlanResetText(m.modelId, pwin)
     return map
   }
   if (m.type === 'balance') {
     v = bubbleAmountText()
     map['balance_ds'] = v
   } else if (m.type === 'today') {
-    v = (state.todayUsage !== null && state.todayUsage !== undefined ? fmt(state.todayUsage, state.currency) : '--')
+    v = (state.todayUsage !== null && state.todayUsage !== undefined ? fmt(state.todayUsage, state.todayUsageCurrency || state.currency) : '--')
     map['expense_ds'] = v
   } else if (bubbleIsPeakCount(m)) {
     v = bubbleCountdownText()
@@ -10631,9 +11065,9 @@ function bubbleTplHelpItems(m) {
       add('quota_total', '额度总量')
       add('quota_reset', '额度重置倒计时')
     }
-    add('plan', '订阅额度已用百分比')
-    add('plan_left', '订阅额度剩余百分比')
-    add('plan_reset', '订阅额度重置倒计时')
+    add('plan', '订阅额度已用百分比（多窗口厂商按「显示样式」所选窗口，带窗口标签）')
+    add('plan_left', '订阅额度剩余百分比（同上）')
+    add('plan_reset', '订阅额度刷新倒计时（同上；全部窗口时为紧凑倒计时）')
     return arr
   }
   if (m.type === 'balance') add('balance_ds', '余额数值')
@@ -10906,7 +11340,19 @@ function bubbleCountdownTick() {
         bubbleCountdownApplyStyle(x.el, x.mod, cur)
       } catch (err) {}
     }
-    if (!bubbleCountdownRows.length && bubbleCountdownTicker) {
+    // v733：非倒计时的峰谷行共用这个 ticker（只在状态真的变了时才动 DOM，不打断跑马灯）
+    bubblePeakRows = bubblePeakRows.filter(function (y) { return y && y.row && y.row.isConnected })
+    if (bubblePeakRows.length) {
+      var peakNow = bubbleIsPeakNow()
+      for (var k = 0; k < bubblePeakRows.length; k++) {
+        var y2 = bubblePeakRows[k]
+        if (y2.peak !== peakNow) {
+          y2.peak = peakNow
+          try { bubblePeakRowApply(y2, peakNow) } catch (err) {}
+        }
+      }
+    }
+    if (!bubbleCountdownRows.length && !bubblePeakRows.length && bubbleCountdownTicker) {
       clearInterval(bubbleCountdownTicker)
       bubbleCountdownTicker = null
     }
@@ -10915,6 +11361,78 @@ function bubbleCountdownTick() {
 function bubbleCountdownRegister(el, mod) {
   bubbleCountdownRows.push({ el: el, mod: mod })
   if (!bubbleCountdownTicker) bubbleCountdownTicker = setInterval(bubbleCountdownTick, 1000)
+}
+// —— v733：峰谷状态实时跟随 ——
+// count / nextpeak 样式由倒计时引擎逐秒刷新；其余峰谷样式（默认「高峰时段 / 空闲时段」、
+// 梁文峰谷、!?峰峰?!、简洁峰/谷）原来只在渲染那一刻取一次状态 —— 泡泡显示期间跨过峰谷切换点，
+// 文字与配色会一直停在旧状态。这里把这类行登记进同一个 1s ticker，状态变化时**原地**改写
+// 文字 / 配色 / 底色（不做整泡重绘，保持「泡泡显示期间内容稳定」的既有设计）。
+var bubblePeakRows = []
+// 文字是直接放在行上还是包一层内层 span，取决于该状态有没有底色 ——
+// 只有「高峰 / 空闲两态底色有无一致」时，DOM 结构才不随状态变化，才能原地改写
+function bubblePeakRowStable(m) {
+  return !!(m.peakBg || m.peakBgRgb) === !!(m.offBg || m.offBgRgb)
+}
+function bubblePeakRowRegister(row, tx, mod, peakNow) {
+  try {
+    if (!mod || mod.type !== 'peak' || bubbleIsPeakCount(mod)) return
+    if (!bubblePeakRowStable(mod)) return
+    bubblePeakRows.push({
+      row: row, tx: tx, mod: mod, peak: !!peakNow,
+      gradEl: (mod.peakBg || mod.peakBgRgb) ? tx : row,
+    })
+    if (!bubbleCountdownTicker) bubbleCountdownTicker = setInterval(bubbleCountdownTick, 1000)
+  } catch (err) {}
+}
+// 跑马灯配色方案白名单（与 blockOf() / bubbleCountdownApplyStyle 用的那套一致）
+function bubbleRgbSchemeOk(s) {
+  return s === 'candy' || s === 'rouge' || s === 'bamboo' || s === 'aurora' || s === 'deepsea' ||
+    s === 'sunset' || s === 'forest' || s === 'champagne' || s === 'lavender' || s === 'mint' ||
+    s === 'lava' || s === 'galaxy' || s === 'ink' || s === 'indigo'
+}
+function bubblePeakRowClearClass(el, prefix) {
+  try {
+    var cls = Array.prototype.slice.call(el.classList || [])
+    for (var i = 0; i < cls.length; i++) {
+      if (String(cls[i]).indexOf(prefix) === 0) { try { el.classList.remove(cls[i]) } catch (err) {} }
+    }
+  } catch (err) {}
+}
+// 原地改写一行峰谷：顺序与 blockOf() 的峰谷分支一致（底色 → 文字跑马灯 → 纯色）
+function bubblePeakRowApply(x, peak) {
+  var m = x.mod
+  try { x.tx.textContent = bubbleContentText(m, bubblePeakText(m)) } catch (err) {}
+  // ① 底色（高峰底色 / 空闲底色，跑马灯优先于纯色）
+  try {
+    var effBgRgb = peak ? String(m.peakBgRgb || '') : String(m.offBgRgb || '')
+    var effBg = effBgRgb ? '' : (peak ? String(m.peakBg || '') : String(m.offBg || ''))
+    if (effBgRgb === 'true') effBgRgb = 'macaron'
+    bubblePeakRowClearClass(x.row, 'dshwv-bgrgb')
+    x.row.style.background = ''
+    if (effBgRgb) {
+      x.row.classList.add('dshwv-bgrgb')
+      if (bubbleRgbSchemeOk(effBgRgb) || effBgRgb === 'macaron') x.row.classList.add('dshwv-bgrgb-' + effBgRgb)
+      x.row.style.animationDuration = bubbleMarqueeDur()
+    } else if (effBg) {
+      x.row.style.background = effBg
+    }
+  } catch (err) {}
+  // ② 文字：本状态跑马灯 > 模块跑马灯 > 本状态纯色 > 模块纯色
+  try {
+    var marquee = (peak ? String(m.peakRgb || '') : String(m.offRgb || '')) || String(m.rgb || '')
+    bubblePeakRowClearClass(x.gradEl, 'dshwv-rgb')
+    x.row.style.color = ''
+    if (marquee) {
+      var scheme = marquee === true ? 'macaron' : String(marquee || 'macaron')
+      x.gradEl.classList.add('dshwv-rgb')
+      if (bubbleRgbSchemeOk(scheme)) x.gradEl.classList.add('dshwv-rgb-' + scheme)
+      x.gradEl.style.animationDuration = bubbleMarqueeDur()
+    } else {
+      var pcol = peak ? String(m.peakColor || '') : String(m.offColor || '')
+      if (pcol) x.row.style.color = pcol
+      else if (m.color) x.row.style.color = String(m.color)
+    }
+  } catch (err) {}
 }
 // v209: 计算单个模块要显示的行文本(与随机选中行),每次全新计算、不跨行复用状态
 function bubbleRowContentOf(mod) {
@@ -10925,7 +11443,7 @@ function bubbleRowContentOf(mod) {
     return { txt: bubbleContentText(mod, bv), line: null }
   }
   if (mod.type === 'today') {
-    var tv2 = bubbleIsModelMod(mod) ? apiModelTodayText(mod.modelId) : (state.todayUsage !== null && state.todayUsage !== undefined ? fmt(state.todayUsage, state.currency) : '--')
+    var tv2 = bubbleIsModelMod(mod) ? apiModelTodayText(mod.modelId) : (state.todayUsage !== null && state.todayUsage !== undefined ? fmt(state.todayUsage, state.todayUsageCurrency || state.currency) : '--')
     return { txt: bubbleContentText(mod, '今日已用 ' + tv2), line: null }
   }
   if (mod.type === 'quota') {
@@ -11068,7 +11586,7 @@ function bubbleRowsTo(parentEl, mods) {
         row.style.background = effBg
       }
     }
-    return { el: row, tx: tx, fSize: fSize, mod: m, peak: (m.type === 'peak' || m.type === 'nextpeak'), bg: needBg }
+    return { el: row, tx: tx, fSize: fSize, mod: m, peak: (m.type === 'peak' || m.type === 'nextpeak'), bg: needBg, curPeak: curPeak }
   }
   // 超宽判定(与旧版一致):先单行渲染,测量实际超出泡泡内宽(560u)才允许该块内折行——
   // 预览与真实共用此逻辑,保证两者一致
@@ -11091,6 +11609,8 @@ function bubbleRowsTo(parentEl, mods) {
   // 倒计时块:注册文字节点(带底色时为内层 span),由每秒 ticker 刷新文案与配色
   function registerIfCountdown(blk) {
     if (bubbleIsPeakCount(blk.mod)) bubbleCountdownRegister(blk.tx, blk.mod)
+    // v733：非 count 的峰谷行登记到同一个 ticker，状态切换时原地刷新（原来只在渲染时取一次）
+    else if (blk.mod && blk.mod.type === 'peak') bubblePeakRowRegister(blk.el, blk.tx, blk.mod, blk.curPeak)
   }
   // 超链接模块:仅真实泡泡(textBox)内可点击,新标签页打开;预览/编辑不弹窗
   function enableLinkRun(blk2) {
@@ -11498,7 +12018,7 @@ function render() {
     hint = '加载中…'
   } else {
     amount = shown !== null ? fmt(shown, state.currency) : fmt(state.balance, state.currency)
-    hint = '今日已用 ' + (state.todayUsage !== null && state.todayUsage !== undefined ? fmt(state.todayUsage, state.currency) : '--')
+    hint = (state.usageLabel || '今日已用') + ' ' + (state.todayUsage !== null && state.todayUsage !== undefined ? fmt(state.todayUsage, state.todayUsageCurrency || state.currency) : '--')
   }
   amountEl.textContent = amount
   if (bubbleRandomActive && bubbleRandomLines) {
@@ -11527,18 +12047,43 @@ function settle() {
     express()
     return
   }
+  // issue #102：锚点分支过去只有下限（左/顶锚甚至完全不夹），脏锚点或尺寸竞态会把挂件算到
+  // 视口外 —— 症状是「启动闪一下 → 向下滑出/镜像 → 消失」，而且 saveConfig 会把负的离边距离
+  // 写回 localStorage，于是刷新也恢复不了。四个锚点分支统一夹到可视区。
+  var maxLFree = Math.max(0, vp.w - w - rightGap())
+  var maxLAnchor = Math.max(0, vp.w - w)
+  var maxT = Math.max(0, vp.h - h)
+  var outOfRange = false
   if (state.h === 'right') {
-    state.left = Math.max(0, vp.w - w - state.hOff - rightGap())
+    var rawR = vp.w - w - state.hOff - rightGap()
+    state.left = clamp(rawR, 0, maxLAnchor)
+    if (state.left !== rawR) outOfRange = true
   } else if (state.h === 'left') {
-    state.left = state.hOff
+    var rawL = state.hOff
+    state.left = clamp(rawL, 0, maxLAnchor)
+    if (state.left !== rawL) outOfRange = true
   } else {
-    state.left = clamp(state.left, 0, Math.max(0, vp.w - w - rightGap()))
-  }  if (state.v === 'bottom') {
-    state.top = Math.max(0, vp.h - h - state.vOff)
+    state.left = clamp(state.left, 0, maxLFree)
+  }
+  if (state.v === 'bottom') {
+    var rawB = vp.h - h - state.vOff
+    state.top = clamp(rawB, 0, maxT)
+    if (state.top !== rawB) outOfRange = true
   } else if (state.v === 'top') {
-    state.top = state.vOff
+    var rawT = state.vOff
+    state.top = clamp(rawT, 0, maxT)
+    if (state.top !== rawT) outOfRange = true
   } else {
-    state.top = clamp(state.top, 0, Math.max(0, vp.h - h))
+    state.top = clamp(state.top, 0, maxT)
+  }
+  // 偏移确实越界（脏数据 / 视口变小）：先把偏移夹回合法范围再落盘，下次启动不再复现。
+  // 只在真的越界时写，正常 resize 不会产生额外的 localStorage 写入。
+  if (outOfRange) {
+    if (state.h === 'right') state.hOff = clamp(state.hOff, 0, Math.max(0, vp.w - w - rightGap()))
+    else if (state.h === 'left') state.hOff = clamp(state.hOff, 0, maxLAnchor)
+    if (state.v === 'bottom') state.vOff = clamp(state.vOff, 0, maxT)
+    else if (state.v === 'top') state.vOff = clamp(state.vOff, 0, maxT)
+    try { saveAnchorPos() } catch (err) {}
   }
   refreshFlip()
 }
@@ -11621,7 +12166,7 @@ function refresh(manual) {
     ctrl = new AbortController()
     timer = setTimeout(function () { try { ctrl.abort() } catch (err) {} }, FETCH_TIMEOUT_MS)
   } catch (err) {}
-  fetch(BALANCE_URL, { cache: 'no-store', signal: ctrl ? ctrl.signal : undefined })
+  fetch(BALANCE_URL + (manual ? '?refresh=1' : ''), { cache: 'no-store', signal: ctrl ? ctrl.signal : undefined })
     .then(function (r) { return r.json() })
     .then(function (data) {
       if (data && data.ok) {
@@ -11633,6 +12178,9 @@ function refresh(manual) {
         state.currency = nc
         state.message = ''
         state.todayUsage = data.todayUsage !== undefined ? data.todayUsage : null
+        state.todayUsageCurrency = data.todayUsageCurrency || data.currency || 'CNY'
+        state.usageLabel = data.usageLabel || '本地估算'
+        if (data.stale) state.usageLabel += ' · 余额未刷新'
         state.isPeak = !!data.isPeak
         checkUsageAlerts(nb, state.todayUsage)
         if (changed && !currencyChanged) {
@@ -11688,27 +12236,90 @@ var costBubbleActive = false
 var scrollGapOn = false
 var scrollGapPx = 17
 var menuBtnHide = false // 主菜单开关:隐藏挂件菜单按钮,改为右键小鲸鱼唤出菜单
-function saveConfig() {
+// —— v734（issue #97 / #88）：设置保存的「防覆盖 + 失败可见」——
+// #97 根因：首次 GET 还没落地就 PUT，会把内存里的默认值整包写进服务端（重启后设置被洗成默认值）。
+// #88 根因：这个 PUT 以前是 fire-and-forget，服务端 500 / {ok:false} 完全没人读。
+var configLoaded = false        // 首次 GET 应用完成前，一律不 PUT
+var configSavePending = false   // 加载期间被挡下的保存，加载完成后补一次
+var dshwvToastEl = null
+var dshwvToastTimer = null
+// 固定定位的小提示条（自动消失；同一时刻只留一条）
+function dshwvToast(msg) {
   try {
-    fetch(SIZE_URL, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scale: state.scale, sound: soundOn, vol: soundVol, soundSet: soundSet, usageMode: usageMode, peakMode: peakMode, bubbleOn: bubbleOn, turnCostOn: turnCostOn, turnCostCloseMs: turnCostCloseMs, scrollGapOn: scrollGapOn, scrollGapPx: scrollGapPx, menuBtnHide: menuBtnHide }) })
+    if (!dshwvToastEl || !dshwvToastEl.parentNode) {
+      var el = document.createElement('div')
+      el.style.cssText = 'position:fixed;left:50%;bottom:28px;transform:translateX(-50%);z-index:2147483600;' +
+        'max-width:min(560px,calc(100vw - 32px));box-sizing:border-box;padding:10px 14px;border-radius:10px;' +
+        'background:#8a1f1f;color:#fff;font-size:13px;line-height:1.6;box-shadow:0 6px 20px rgba(0,0,0,.28);' +
+        'pointer-events:none;text-align:center'
+      document.body.appendChild(el)
+      dshwvToastEl = el
+    }
+    dshwvToastEl.innerHTML = msg
+    if (dshwvToastTimer) clearTimeout(dshwvToastTimer)
+    dshwvToastTimer = setTimeout(function () {
+      try { if (dshwvToastEl && dshwvToastEl.parentNode) dshwvToastEl.parentNode.removeChild(dshwvToastEl) } catch (err) {}
+      dshwvToastEl = null
+    }, 8000)
+  } catch (err) {}
+}
+function configSaveFailNotice(detail) {
+  try { console.error('[dsh-whale] 设置保存失败:', detail) } catch (err) {}
+  dshwvToast('⚠ 设置保存失败：' + String(detail || '').slice(0, 120) +
+    '<br>已自动重试一次。若持续失败，请检查 DSH 数据目录是否可写。')
+}
+function configPayload() {
+  return JSON.stringify({ scale: state.scale, sound: soundOn, vol: soundVol, soundSet: soundSet, usageMode: usageMode, peakMode: peakMode, bubbleOn: bubbleOn, turnCostOn: turnCostOn, turnCostCloseMs: turnCostCloseMs, scrollGapOn: scrollGapOn, scrollGapPx: scrollGapPx, menuBtnHide: menuBtnHide })
+}
+// 真正的 PUT：读响应 → 失败（网络异常 / HTTP!=200 / {ok:false}）静默重试一次 → 仍失败才提示
+function configPut(payload, retried) {
+  return fetch(SIZE_URL, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: payload })
+    .then(function (r) {
+      return r.json().catch(function () { return null }).then(function (d) { return { ok: r.ok, status: r.status, d: d } })
+    })
+    .then(function (x) {
+      if (x.ok && (!x.d || x.d.ok !== false)) return true
+      if (!retried) return new Promise(function (res) { setTimeout(function () { res(configPut(payload, true)) }, 900) })
+      configSaveFailNotice((x.d && x.d.error) || ('HTTP ' + x.status))
+      return false
+    })
+    .catch(function (err) {
+      if (!retried) return new Promise(function (res) { setTimeout(function () { res(configPut(payload, true)) }, 900) })
+      configSaveFailNotice((err && err.message) || err)
+      return false
+    })
+}
+function saveConfig() {
+  // issue #97：加载完成前只记待办，绝不 PUT（否则把默认值整包写进服务端）
+  if (!configLoaded) { configSavePending = true; return }
+  try {
+    configPut(configPayload(), false)
     // 锚点位置记忆：记录相对边框的离边距离，窗口 resize 后保持（localStorage）。
-    // v:2 = 净距离格式（剥离避让距离），v:1 旧格式含避让距离，恢复时废弃旧格式。
+    saveAnchorPos()
+  } catch (err) {}
+}
+// 单独抽出：只写 localStorage 锚点（不碰尺寸设置）；applyAnchorPos / settle 自愈时也要用。
+// v:2 = 净距离格式（剥离避让距离），v:1 旧格式含避让距离，恢复时废弃旧格式。
+function saveAnchorPos() {
+  try {
     var vp = viewport()
     var w = root.offsetWidth || root.getBoundingClientRect().width || 0
     var h = root.offsetHeight || root.getBoundingClientRect().height || 0
-    var leftDist = state.left
-    var rightDist = vp.w - state.left - w
-    var topDist = state.top
-    var bottomDist = vp.h - state.top - h
+    var leftDist = isFinite(state.left) ? state.left : 0
+    var rightDist = vp.w - leftDist - w
+    var topDist = isFinite(state.top) ? state.top : 0
+    var bottomDist = vp.h - topDist - h
     var hAnchor = leftDist <= rightDist ? 'left' : 'right'
-    var hDistRaw = Math.round(Math.min(leftDist, rightDist))
+    // issue #102：离边距离必须非负。挂件一旦被算到屏幕外，min(leftDist, rightDist) 就是负数，
+    // 存进去会变成"永久坏锚点"，此后每次启动都复现（刷新也恢复不了）。
+    var hDistRaw = Math.max(0, Math.round(Math.min(leftDist, rightDist)))
     var hDist = hAnchor === 'right' && scrollGapOn ? Math.max(0, hDistRaw - rightGap()) : hDistRaw
     localStorage.setItem('dshw-pos', JSON.stringify({
       v: 2,
       hAnchor: hAnchor,
       hDist: hDist,
       vAnchor: topDist <= bottomDist ? 'top' : 'bottom',
-      vDist: Math.round(Math.min(topDist, bottomDist))
+      vDist: Math.max(0, Math.round(Math.min(topDist, bottomDist)))
     }))
   } catch (err) {}
 }
@@ -11837,6 +12448,11 @@ var releasePlayed = false
 var releaseTimer = null
 function applySoundSet() {
   try {
+    // v729：切音效组 / 开关音效时把本轮播放状态一并复位，
+    // 避免残留 releasePlayed=true 把新组的松开音整体吃掉（与 playPress 的修复配套）
+    if (releaseTimer) { clearTimeout(releaseTimer); releaseTimer = null }
+    pressEnded = false
+    releasePlayed = false
     // 槽位显式留空(该事件静音)时,对应音频元素置空;playPress/playRelease 已判空
     var pEmpty = audioGroupSlotEmpty(soundSet, 'press')
     var rEmpty = audioGroupSlotEmpty(soundSet, 'release')
@@ -11854,19 +12470,23 @@ function applySoundSet() {
 }
 function playPress() {
   if (!soundOn) return
+  // v729 修复：**本轮状态复位必须放在「按压槽留空」分支之前**。
+  // 原实现里 pressAudio 为空时直接 return，跳过了 releasePlayed = false；而 playRelease()
+  // 一旦把 releasePlayed 置为 true 就再没有任何地方复位它 → 结果是只有第一次松开有声音，
+  // 之后每次点击都静音（用户实测：新建音效组只填松开音时复现）。
+  if (releaseTimer) { clearTimeout(releaseTimer); releaseTimer = null }
+  if (releaseAudio) {
+    releaseAudio.pause()
+    releaseAudio.currentTime = 0
+  }
+  pressEnded = false
+  releasePlayed = false
   if (!pressAudio) {
-    // 按压槽留空:按压事件静音,但“按压已结束”标记保持同步,松开时若松开槽有声仍会响
+    // 按压槽留空:按压事件静音,但状态已复位 → 每次松开都还能正常发声
     pressEnded = true
     return
   }
   try {
-    if (releaseTimer) { clearTimeout(releaseTimer); releaseTimer = null }
-    if (releaseAudio) {
-      releaseAudio.pause()
-      releaseAudio.currentTime = 0
-    }
-    pressEnded = false
-    releasePlayed = false
     pressAudio.onended = function () {
       pressEnded = true
       // fallback (duration unknown): click → Ya2 right after Ya1 ends
@@ -14529,19 +15149,27 @@ function applyAnchorPos() {
     var vp = viewport()
     var w = root.offsetWidth || root.getBoundingClientRect().width || 0
     var h = root.offsetHeight || root.getBoundingClientRect().height || 0
+    var maxOffH = Math.max(0, vp.w - w)
+    var maxOffV = Math.max(0, vp.h - h)
+    // issue #102 自愈：非法距离（负数 = 存进去时挂件已在屏幕外；超出视口 = 窗口变小/脏数据）
+    // 一律夹回合法范围并把修正结果落盘 —— 老用户中了脏数据也能自己恢复，无需手清 localStorage。
+    var hDist = isFinite(a.hDist) ? clamp(a.hDist, 0, maxOffH) : 0
+    var vDist = isFinite(a.vDist) ? clamp(a.vDist, 0, maxOffV) : 0
+    var healed = (hDist !== a.hDist || vDist !== a.vDist)
     // 与加载恢复一致：锚点存净距离，右锚点按当前避让开关叠加
-    var effectiveRightDist = a.hAnchor === 'right' ? a.hDist + (scrollGapOn ? rightGap() : 0) : a.hDist
-    var l = a.hAnchor === 'left' ? a.hDist : vp.w - effectiveRightDist - w
-    var t = a.vAnchor === 'top' ? a.vDist : vp.h - a.vDist - h
-    state.left = clamp(l, 0, Math.max(0, vp.w - w))
-    state.top = clamp(t, 0, Math.max(0, vp.h - h))
+    var effectiveRightDist = a.hAnchor === 'right' ? hDist + (scrollGapOn ? rightGap() : 0) : hDist
+    var l = a.hAnchor === 'left' ? hDist : vp.w - effectiveRightDist - w
+    var t = a.vAnchor === 'top' ? vDist : vp.h - vDist - h
+    state.left = clamp(l, 0, maxOffH)
+    state.top = clamp(t, 0, maxOffV)
     state.h = a.hAnchor
     // 净距离直接还给 hOff/vOff：settle() 对锚定状态从偏移量重算，
     // 若置 0 会把刚恢复的距离覆盖成贴边（issue #43）
-    state.hOff = a.hDist
+    state.hOff = hDist
     state.v = a.vAnchor
-    state.vOff = a.vDist
+    state.vOff = vDist
     refreshFlip()
+    if (healed) { try { saveAnchorPos() } catch (err) {} }
     return true
   } catch (err) { return false }
 }
@@ -14641,33 +15269,25 @@ fetch(SIZE_URL, { cache: 'no-store' })
     }
     // 相对边框恢复（localStorage 锚点）：窗口变化后保持离边距离。
     // 仅认 v:2 净距离格式；旧格式（含避让距离）废弃，挂件保持默认右下角吸附。
-    // 恢复时还原吸附状态（hAnchor/vAnchor → state.h/v），避免挂件变自由位置
-    // 导致避让调节不实时（settle 自由分支只 clamp 不重算位置）。
+    // issue #102：这里原与 applyAnchorPos() 各写了一份恢复逻辑（两份都只做下限夹紧），
+    // 现在统一走 applyAnchorPos()，避免"只修一处、另一处仍复现"。
     try {
-      var a = JSON.parse(localStorage.getItem('dshw-pos') || 'null')
-      if (a && a.v === 2 && (a.hAnchor === 'left' || a.hAnchor === 'right') && typeof a.hDist === 'number' &&
-          (a.vAnchor === 'top' || a.vAnchor === 'bottom') && typeof a.vDist === 'number') {
-        var vpA = viewport()
-        var wA = root.offsetWidth || root.getBoundingClientRect().width || 0
-        var hA = root.offsetHeight || root.getBoundingClientRect().height || 0
-        // 锚点存的是净距离：右锚点按当前避让开关叠加避让距离
-        var effectiveRightDist = a.hAnchor === 'right' ? a.hDist + (scrollGapOn ? rightGap() : 0) : a.hDist
-        var lA = a.hAnchor === 'left' ? a.hDist : vpA.w - effectiveRightDist - wA
-        var tA = a.vAnchor === 'top' ? a.vDist : vpA.h - a.vDist - hA
-        state.left = clamp(lA, 0, Math.max(0, vpA.w - wA))
-        state.top = clamp(tA, 0, Math.max(0, vpA.h - hA))
-        // 按锚点还原吸附状态（贴边锚点 → 吸附；自由位锚点 → 自由）。
-        // 净距离还给 hOff/vOff，否则 settle() 按偏移量重算成贴边（issue #43）
-        state.h = a.hAnchor
-        state.hOff = a.hDist
-        state.v = a.vAnchor
-        state.vOff = a.vDist
+      if (applyAnchorPos()) {
         settle()
+        // 恢复时 offsetWidth 可能还是 0（字体/图片尚未就绪），尺寸就绪后再夹一次（issue #102）
+        setTimeout(function () { try { settle() } catch (err) {} }, 500)
       }
     } catch (err) {}
     refresh(false)
+    // v734（issue #97）：首次 GET 应用完成 —— 从这一刻起才允许 saveConfig() 落盘
+    configLoaded = true
+    if (configSavePending) { configSavePending = false; try { saveConfig() } catch (err) {} }
   })
-  .catch(function () { refresh(false) })
+  .catch(function () {
+    // 读取失败：绝不能拿内存里的默认值去 PUT（那正是「设置被洗成默认值」）
+    refresh(false)
+    dshwvToast('⚠ 设置读取失败，已暂停保存以免覆盖你的原有设置<br>请刷新页面重试')
+  })
 setInterval(function () { refresh(false); try { loadApiModels(null, true) } catch (err) {} }, REFRESH_MS)
 
 // —— 每轮对话消耗检测：轮询 last-turn.json，出现新 seq 时弹消耗金额泡泡 ——
