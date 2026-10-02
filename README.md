@@ -127,6 +127,7 @@ dsh-whale-widget/
 │   ├── task-end-a.wav        # 任务结束音内置预设（A）
 │   ├── bubble-petpet.gif     # 内置泡泡图：petpet
 │   └── bubble-money1.gif     # 内置泡泡图：money1（余额预警默认内容的配图）
+├── tools/status-adapters-test.mjs # 状态适配器与宿主接口回归测试
 └── whale-widget-prompt.md    # 完整规格/维护提示词（面向二次开发）
 ```
 
@@ -134,6 +135,7 @@ dsh-whale-widget/
 
 | 文件 / 目录 | 用途 |
 |---|---|
+| `.dshw-role-switch.json` | 状态图片映射、最短持续时间与默认回退配置 |
 | `.dshw-size.json` | 挂件外观与开关（缩放、音量、音效组、峰值样式、吸附相关等） |
 | `.dshw-usage.json` | 记账账本 + 按日余额观测/校正摘要 + 用量设置（任务结束音、余额预警、今日预算、每轮消耗提示内容，以及 **`events`**：按压 / 每轮消耗 / 提问 / 授权四个事件的音效选择、独立音量、冒泡配置；**每轮消耗的自动关闭秒数存在 `.dshw-size.json` 的 `turnCostCloseMs`**） |
 | `.dshw-usage.json.before-recharge-fix.bak` | 旧格式账本备份（0.3.1 首次写入旧账本前自动创建；已存在则不覆盖） |
@@ -145,6 +147,16 @@ dsh-whale-widget/
 | `whale-roles/` | 自定义角色图 + `roles.json` 索引 |
 | `whale-audio/` | 音频片段 `<id>.wav` + `audio.json` 索引（音效组/片段） |
 | `whale-bubble-imgs/` | 泡泡图库图片 + `bubble-imgs.json` 索引 |
+
+### 对话状态切换（本 PR 临时六态）
+
+角色菜单后的「状态切换」可按当前会话切换形象。六态暂为默认、深度思考、输出、调用工具、调用工具失败、输出完成后，最终集合待评审讨论。缺少状态图片时保留基础角色，用现有 SVG 气泡显示状态文字；默认状态不主动冒泡。状态气泡服从气泡总开关，并让位于消耗、提问和授权提示。
+
+自定义面板支持全局或按状态的最短持续时间，以及进入状态后延时恢复默认显示。配置保存在 `$DSH_HOME/.dshw-role-switch.json`，沿用旧 PR 的 v2 字段；读取失败不会自动保存默认配置，保存失败会重试一次并显示提示。图片状态不会改写基础角色选择。
+
+`/dsh-whale/role-switch.json` 提供 GET 和 PUT（兼容 POST）配置读写；`/dsh-whale/role-state.json?session=<会话ID>` 只允许 GET，返回 `{ ok, session, seq, type }`，其中 type 为 `turn/start`、`turn/end` 或 null。该信号独立于费用聚合，首次加载只对齐序号，不重放历史完成。状态检测使用 DSH 的 `data-conversation-session` 容器；无法确定当前会话时回退默认，不猜测后台会话。
+
+回归验证：`node --test tools/status-adapters-test.mjs`。本测试使用可控时钟与隔离临时数据目录，不读取用户凭据或写入用户 DSH 配置。
 
 ## 安装
 
@@ -397,7 +409,7 @@ curl http://127.0.0.1:3080/dsh-whale/audio.json
 - `/dsh-whale/wait.json` → 200 JSON，含 `{ok:true, pending}`；`pending` 为当前挂起的「提问 / 授权」（`{kind:'question'|'approval', id, ts}`）或 `null` —— 这是「提问提示 / 授权提示」音效与常驻气泡的数据源（默认每秒轮询一次）
 - 浏览器 F5 后右下角出现挂件
 
-> ⚠️ **关于上面这些 `curl`**：全部 **23 个** `/dsh-whale/*` 路由都已接入 **DSH 浏览器信任栅栏**（`connection.requestRejection`）。
+> ⚠️ **关于上面这些 `curl`**：全部 **25 个** `/dsh-whale/*` 路由都已接入 **DSH 浏览器信任栅栏**（`connection.requestRejection`）。
 > 因此**不带会话凭据的裸 `curl` 会返回 401**（伪造 `Host` 头则是 403）—— 这是预期行为，不是接口坏了。
 > 想验证接口是否存活，看返回 **401/403** 即说明路由已注册且栅栏在工作；在浏览器里访问同一条路径（带会话）才是 200。
 > 另外**自 0.3.15 起，写请求（`POST`/`PUT`/`PATCH`/`DELETE`）还必须是本机来源**（Host 为 `127.0.0.1`/`localhost`/`[::1]`），否则 403 —— 详见上方「安全边界」。

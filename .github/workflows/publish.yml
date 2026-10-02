@@ -81,6 +81,9 @@ jobs:
       # 发版前门禁（与 ci.yml 同一项，这里再跑一次：**不允许在审计不通过时发布**）
       # 层级自检（issue #131 / #142）：候选表里出现未声明的名字、或 body 级 *Mask 浮层没登记，
       # 都会静默失效（下拉被盖住 / 两个窗口互相盖）。让它在 CI 里硬失败，别等用户报「点了没反应」。
+      - name: Status adapter regression tests
+        run: node --test tools/status-adapters-test.mjs
+
       - name: Layer audit (z-index invariants)
         run: node tools/z-layer-audit.mjs assets/whale-widget.js
 
